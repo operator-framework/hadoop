@@ -1,0 +1,3 @@
+# ignore anything inside a target directory, as that is the output of a maven
+# build and we want a fresh environment
+**/target/*
