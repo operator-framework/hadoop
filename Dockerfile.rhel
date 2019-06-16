@@ -1,19 +1,45 @@
-FROM registry.svc.ci.openshift.org/openshift/release:rhel-7-release-openshift-4.6 AS build
-# This FROM is RHEL7 based because the CI based hadoop build requires a precise
-# version of protobuf (2.5.0) which is unavilable on RHEL8. Downstream
-# production builds use RHEL8 for this builder image since protobuf 2.5.0 is not
-# required and ARM builds require RHEL8.
+FROM rhel7:7-released AS build
+
+RUN yum -y update && yum clean all
+
+RUN yum -y install curl \
+    && yum clean all \
+    && rm -rf /var/cache/yum
 
 RUN mkdir /build
 COPY . /build
+
 WORKDIR /build
 
-COPY opt_maven_install.sh /tmp/
-RUN chmod u+x /tmp/opt_maven_install.sh && /tmp/opt_maven_install.sh $OPENSHIFT_CI
+ENV RH_HADOOP_PATCH_VERSION 00002
+ENV HADOOP_VERSION 3.1.1
 
-FROM registry.svc.ci.openshift.org/ocp/builder:rhel-8-base-openshift-4.6
+ENV HADOOP_RELEASE_URL http://download.eng.bos.redhat.com/brewroot/packages/org.apache.hadoop-hadoop-main/${HADOOP_VERSION}.redhat_${RH_HADOOP_PATCH_VERSION}/1/maven/org/apache/hadoop/hadoop-dist/${HADOOP_VERSION}.redhat-${RH_HADOOP_PATCH_VERSION}/hadoop-dist-${HADOOP_VERSION}.redhat-${RH_HADOOP_PATCH_VERSION}-bin.tar.gz
+ENV HADOOP_OUT /build/hadoop-dist/target/hadoop-$HADOOP_VERSION
 
-RUN set -x; yum install --setopt=skip_missing_names_on_install=False -y \
+RUN curl -fSLs \
+    $HADOOP_RELEASE_URL \
+    -o /tmp/hadoop-dist-bin.tar.gz
+
+RUN mkdir -p $(dirname $HADOOP_OUT) && \
+    tar -xvf /tmp/hadoop-dist-bin.tar.gz -C /tmp \
+    && mv /tmp/hadoop-${HADOOP_VERSION}.redhat-${RH_HADOOP_PATCH_VERSION}/ \
+    $HADOOP_OUT
+
+ENV PROMETHEUS_JMX_EXPORTER_VERSION 0.3.1
+ENV RH_PROMETHEUS_JMX_EXPORTER_PATCH_VERSION 00006
+ENV RH_PROMETHEUS_JMX_EXPORTER_VERSION ${PROMETHEUS_JMX_EXPORTER_VERSION}.redhat-${RH_PROMETHEUS_JMX_EXPORTER_PATCH_VERSION}
+ENV RH_PROMETHEUS_JMX_EXPORTER_BREW_DIR ${PROMETHEUS_JMX_EXPORTER_VERSION}.redhat_${RH_PROMETHEUS_JMX_EXPORTER_PATCH_VERSION}
+ENV PROMETHEUS_JMX_EXPORTER_OUT /build/jmx_prometheus_javaagent.jar
+ARG PROMETHEUS_JMX_EXPORTER_URL=http://download.eng.bos.redhat.com/brewroot/packages/io.prometheus.jmx-parent/${RH_PROMETHEUS_JMX_EXPORTER_BREW_DIR}/1/maven/io/prometheus/jmx/jmx_prometheus_javaagent/${RH_PROMETHEUS_JMX_EXPORTER_VERSION}/jmx_prometheus_javaagent-${RH_PROMETHEUS_JMX_EXPORTER_VERSION}.jar
+
+RUN set -x; curl -fSLs \
+    $PROMETHEUS_JMX_EXPORTER_URL \
+    -o $PROMETHEUS_JMX_EXPORTER_OUT
+
+FROM rhel7:7-released
+
+RUN yum install --setopt=skip_missing_names_on_install=False -y \
         java-1.8.0-openjdk \
         java-1.8.0-openjdk-devel \
         curl \
@@ -23,10 +49,6 @@ RUN set -x; yum install --setopt=skip_missing_names_on_install=False -y \
         bind-utils \
         which \
         jq \
-        rsync \
-        openssl \
-        faq \
-        tini \
     && yum clean all \
     && rm -rf /tmp/* /var/tmp/*
 
@@ -38,14 +60,11 @@ ENV HADOOP_HOME=/opt/hadoop
 ENV HADOOP_LOG_DIR=$HADOOP_HOME/logs
 ENV HADOOP_CLASSPATH=$HADOOP_HOME/share/hadoop/tools/lib/*
 ENV HADOOP_CONF_DIR=/etc/hadoop
-ENV PROMETHEUS_JMX_EXPORTER=/opt/jmx_exporter/jmx_exporter.jar
+ENV PROMETHEUS_JMX_EXPORTER /opt/jmx_exporter/jmx_exporter.jar
 ENV PATH=$HADOOP_HOME/bin:$PATH
 
 COPY --from=build /build/hadoop-dist/target/hadoop-$HADOOP_VERSION $HADOOP_HOME
 COPY --from=build /build/jmx_prometheus_javaagent.jar $PROMETHEUS_JMX_EXPORTER
-COPY --from=build /build/gcs-connector-hadoop3-shaded.jar $HADOOP_HOME/share/hadoop/tools/lib/gcs-connector-hadoop3-shaded.jar
-WORKDIR $HADOOP_HOME
-
 # remove unnecessary doc/src files
 RUN rm -rf ${HADOOP_HOME}/share/doc \
     && for dir in common hdfs mapreduce tools yarn; do \
@@ -66,12 +85,13 @@ RUN sed -i '/networkaddress.cache.negative.ttl/d' $JAVA_HOME/lib/security/java.s
 RUN echo 'networkaddress.cache.ttl=0' >> $JAVA_HOME/lib/security/java.security
 RUN echo 'networkaddress.cache.negative.ttl=0' >> $JAVA_HOME/lib/security/java.security
 
+RUN useradd hadoop -m -u 1002 -d $HADOOP_HOME
+
 # imagebuilder expects the directory to be created before VOLUME
 RUN mkdir -p /hadoop/dfs/data /hadoop/dfs/name
-
 # to allow running as non-root
-RUN chown -R 1002:0 $HADOOP_HOME /hadoop $HADOOP_CONF_DIR $JAVA_HOME/lib/security/cacerts && \
-    chmod -R 774 $HADOOP_HOME /hadoop $HADOOP_CONF_DIR $JAVA_HOME/lib/security/cacerts
+RUN chown -R 1002:0 $HADOOP_HOME /hadoop $HADOOP_CONF_DIR && \
+    chmod -R 774 $HADOOP_HOME /hadoop $HADOOP_CONF_DIR /etc/passwd
 
 VOLUME /hadoop/dfs/data /hadoop/dfs/name
 
@@ -80,4 +100,5 @@ USER 1002
 LABEL io.k8s.display-name="OpenShift Hadoop" \
       io.k8s.description="This is an image used by operator-metering to to install and run HDFS." \
       io.openshift.tags="openshift" \
-      maintainer="AOS Operator Metering <sd-operator-metering@redhat.com>"
+      maintainer="Chance Zibolski <czibolsk@redhat.com>"
+
