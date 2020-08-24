@@ -23,7 +23,7 @@ if [[ "$1" == "true" ]]; then
   export PATH=${PATH}:${M2_HOME}/bin
   popd
 
-  ln -s /usr/bin/cmake3 /usr/bin/cmake
+  ln -sf /usr/bin/cmake3 /usr/bin/cmake
   export CMAKE_C_COMPILER=gcc CMAKE_CXX_COMPILER=g++
 
   # Build hadoop
