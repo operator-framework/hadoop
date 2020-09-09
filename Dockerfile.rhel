@@ -1,0 +1,83 @@
+FROM registry.svc.ci.openshift.org/openshift/release:rhel-7-release-openshift-4.6 AS build
+# This FROM is RHEL7 based because the CI based hadoop build requires a precise
+# version of protobuf (2.5.0) which is unavilable on RHEL8. Downstream
+# production builds use RHEL8 for this builder image since protobuf 2.5.0 is not
+# required and ARM builds require RHEL8.
+
+RUN mkdir /build
+COPY . /build
+WORKDIR /build
+
+COPY opt_maven_install.sh /tmp/
+RUN chmod u+x /tmp/opt_maven_install.sh && /tmp/opt_maven_install.sh $OPENSHIFT_CI
+
+FROM registry.svc.ci.openshift.org/ocp/builder:rhel-8-base-openshift-4.6
+
+RUN set -x; yum install --setopt=skip_missing_names_on_install=False -y \
+        java-1.8.0-openjdk \
+        java-1.8.0-openjdk-devel \
+        curl \
+        less  \
+        procps \
+        net-tools \
+        bind-utils \
+        which \
+        jq \
+        rsync \
+        openssl \
+        faq \
+        tini \
+    && yum clean all \
+    && rm -rf /tmp/* /var/tmp/*
+
+ENV JAVA_HOME=/etc/alternatives/jre
+
+ENV HADOOP_VERSION 3.1.1
+
+ENV HADOOP_HOME=/opt/hadoop
+ENV HADOOP_LOG_DIR=$HADOOP_HOME/logs
+ENV HADOOP_CLASSPATH=$HADOOP_HOME/share/hadoop/tools/lib/*
+ENV HADOOP_CONF_DIR=/etc/hadoop
+ENV PROMETHEUS_JMX_EXPORTER=/opt/jmx_exporter/jmx_exporter.jar
+ENV PATH=$HADOOP_HOME/bin:$PATH
+
+COPY --from=build /build/hadoop-dist/target/hadoop-$HADOOP_VERSION $HADOOP_HOME
+COPY --from=build /build/jmx_prometheus_javaagent.jar $PROMETHEUS_JMX_EXPORTER
+COPY --from=build /build/gcs-connector-hadoop3-shaded.jar $HADOOP_HOME/share/hadoop/tools/lib/gcs-connector-hadoop3-shaded.jar
+WORKDIR $HADOOP_HOME
+
+# remove unnecessary doc/src files
+RUN rm -rf ${HADOOP_HOME}/share/doc \
+    && for dir in common hdfs mapreduce tools yarn; do \
+         rm -rf ${HADOOP_HOME}/share/hadoop/${dir}/sources; \
+       done \
+    && rm -rf ${HADOOP_HOME}/share/hadoop/common/jdiff \
+    && rm -rf ${HADOOP_HOME}/share/hadoop/mapreduce/lib-examples \
+    && rm -rf ${HADOOP_HOME}/share/hadoop/yarn/test \
+    && find ${HADOOP_HOME}/share/hadoop -name *test*.jar | xargs rm -rf
+
+RUN ln -s $HADOOP_HOME/etc/hadoop $HADOOP_CONF_DIR
+RUN mkdir -p $HADOOP_LOG_DIR
+
+# https://docs.oracle.com/javase/7/docs/technotes/guides/net/properties.html
+# Java caches dns results forever, don't cache dns results forever:
+RUN sed -i '/networkaddress.cache.ttl/d' $JAVA_HOME/lib/security/java.security
+RUN sed -i '/networkaddress.cache.negative.ttl/d' $JAVA_HOME/lib/security/java.security
+RUN echo 'networkaddress.cache.ttl=0' >> $JAVA_HOME/lib/security/java.security
+RUN echo 'networkaddress.cache.negative.ttl=0' >> $JAVA_HOME/lib/security/java.security
+
+# imagebuilder expects the directory to be created before VOLUME
+RUN mkdir -p /hadoop/dfs/data /hadoop/dfs/name
+
+# to allow running as non-root
+RUN chown -R 1002:0 $HADOOP_HOME /hadoop $HADOOP_CONF_DIR $JAVA_HOME/lib/security/cacerts && \
+    chmod -R 774 $HADOOP_HOME /hadoop $HADOOP_CONF_DIR $JAVA_HOME/lib/security/cacerts
+
+VOLUME /hadoop/dfs/data /hadoop/dfs/name
+
+USER 1002
+
+LABEL io.k8s.display-name="OpenShift Hadoop" \
+      io.k8s.description="This is an image used by operator-metering to to install and run HDFS." \
+      io.openshift.tags="openshift" \
+      maintainer="AOS Operator Metering <sd-operator-metering@redhat.com>"
