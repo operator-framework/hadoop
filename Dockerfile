@@ -55,23 +55,23 @@ RUN scl enable rh-maven33 'cd /build && mvn dependency:get -Dartifact=com.google
 
 FROM centos:7
 
-# our copy of faq and jq
-COPY faq.repo /etc/yum.repos.d/ecnahc515-faq-epel-7.repo
+# In order to avoid a potential `faq` and `jq` conflict using yum, curl the binary
+# from Github and move to /usr/local/bin
+ARG LATEST_RELEASE=0.0.6
+RUN curl -Lo /usr/local/bin/faq https://github.com/jzelinskie/faq/releases/download/$LATEST_RELEASE/faq-linux-amd64 && chmod +x /usr/local/bin/faq
 
-RUN yum install --setopt=skip_missing_names_on_install=False -y epel-release
 RUN set -x; yum install --setopt=skip_missing_names_on_install=False -y \
-        java-1.8.0-openjdk \
-        java-1.8.0-openjdk-devel \
-        curl \
-        less  \
-        procps \
-        net-tools \
-        bind-utils \
-        which \
-        jq \
-        rsync \
-        openssl \
-        faq \
+    java-1.8.0-openjdk \
+    java-1.8.0-openjdk-devel \
+    epel-release \
+    curl \
+    less  \
+    procps \
+    net-tools \
+    bind-utils \
+    which \
+    rsync \
+    openssl \
     && yum clean all \
     && rm -rf /tmp/* /var/tmp/*
 
@@ -99,8 +99,8 @@ WORKDIR $HADOOP_HOME
 # remove unnecessary doc/src files
 RUN rm -rf ${HADOOP_HOME}/share/doc \
     && for dir in common hdfs mapreduce tools yarn; do \
-         rm -rf ${HADOOP_HOME}/share/hadoop/${dir}/sources; \
-       done \
+    rm -rf ${HADOOP_HOME}/share/hadoop/${dir}/sources; \
+    done \
     && rm -rf ${HADOOP_HOME}/share/hadoop/common/jdiff \
     && rm -rf ${HADOOP_HOME}/share/hadoop/mapreduce/lib-examples \
     && rm -rf ${HADOOP_HOME}/share/hadoop/yarn/test \
@@ -128,6 +128,7 @@ VOLUME /hadoop/dfs/data /hadoop/dfs/name
 USER 1002
 
 LABEL io.k8s.display-name="OpenShift Hadoop" \
-      io.k8s.description="This is an image used by operator-metering to to install and run HDFS." \
-      io.openshift.tags="openshift" \
-      maintainer="AOS Operator Metering <sd-operator-metering@redhat.com>"
+    io.k8s.description="This is an image used by the Metering Operator to to install and run HDFS." \
+    summary="This is an image used by the Metering Operator to to install and run HDFS." \
+    io.openshift.tags="openshift" \
+    maintainer="<metering-team@redhat.com>"
