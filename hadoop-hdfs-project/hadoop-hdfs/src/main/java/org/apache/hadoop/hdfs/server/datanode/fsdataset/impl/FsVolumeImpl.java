@@ -188,8 +188,6 @@ public class FsVolumeImpl implements FsVolumeSpi {
     }
     this.conf = conf;
     this.fileIoProvider = fileIoProvider;
-    this.reserved = new ReservedSpaceCalculator.Builder(conf)
-        .setUsage(usage).setStorageType(storageType).build();
   }
 
   protected ThreadPoolExecutor initializeCacheExecutor(File parent) {
