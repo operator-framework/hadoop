@@ -28,6 +28,7 @@ import java.util.Set;
 
 import org.apache.hadoop.hdfs.protocol.AddErasureCodingPolicyResponse;
 import org.apache.hadoop.hdfs.protocol.ECBlockGroupStats;
+import org.apache.hadoop.hdfs.protocol.ECTopologyVerifierResult;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyInfo;
 import org.apache.hadoop.hdfs.server.federation.resolver.ActiveNamenodeResolver;
@@ -140,7 +141,7 @@ public class ErasureCoding {
     rpcServer.checkOperation(OperationCategory.READ);
 
     final List<RemoteLocation> locations =
-        rpcServer.getLocationsForPath(src, true);
+        rpcServer.getLocationsForPath(src, false, false);
     RemoteMethod remoteMethod = new RemoteMethod("getErasureCodingPolicy",
         new Class<?>[] {String.class}, new RemoteParam());
     ErasureCodingPolicy ret = rpcClient.invokeSequential(
@@ -153,21 +154,50 @@ public class ErasureCoding {
     rpcServer.checkOperation(OperationCategory.WRITE);
 
     final List<RemoteLocation> locations =
-        rpcServer.getLocationsForPath(src, true);
+        rpcServer.getLocationsForPath(src, false, false);
     RemoteMethod remoteMethod = new RemoteMethod("setErasureCodingPolicy",
         new Class<?>[] {String.class, String.class},
         new RemoteParam(), ecPolicyName);
-    rpcClient.invokeSequential(locations, remoteMethod, null, null);
+    if (rpcServer.isInvokeConcurrent(src)) {
+      rpcClient.invokeConcurrent(locations, remoteMethod);
+    } else {
+      rpcClient.invokeSequential(locations, remoteMethod);
+    }
   }
 
   public void unsetErasureCodingPolicy(String src) throws IOException {
     rpcServer.checkOperation(OperationCategory.WRITE);
 
     final List<RemoteLocation> locations =
-        rpcServer.getLocationsForPath(src, true);
+        rpcServer.getLocationsForPath(src, false, false);
     RemoteMethod remoteMethod = new RemoteMethod("unsetErasureCodingPolicy",
         new Class<?>[] {String.class}, new RemoteParam());
-    rpcClient.invokeSequential(locations, remoteMethod, null, null);
+    if (rpcServer.isInvokeConcurrent(src)) {
+      rpcClient.invokeConcurrent(locations, remoteMethod);
+    } else {
+      rpcClient.invokeSequential(locations, remoteMethod);
+    }
+  }
+
+  public ECTopologyVerifierResult getECTopologyResultForPolicies(
+      String[] policyNames) throws IOException {
+    RemoteMethod method = new RemoteMethod("getECTopologyResultForPolicies",
+        new Class<?>[] {String[].class}, new Object[] {policyNames});
+    Set<FederationNamespaceInfo> nss = namenodeResolver.getNamespaces();
+    if (nss.isEmpty()) {
+      throw new IOException("No namespace availaible.");
+    }
+    Map<FederationNamespaceInfo, ECTopologyVerifierResult> ret = rpcClient
+        .invokeConcurrent(nss, method, true, false,
+            ECTopologyVerifierResult.class);
+    for (Map.Entry<FederationNamespaceInfo, ECTopologyVerifierResult> entry : ret
+        .entrySet()) {
+      if (!entry.getValue().isSupported()) {
+        return entry.getValue();
+      }
+    }
+    // If no negative result, return the result from the first namespace.
+    return ret.get(nss.iterator().next());
   }
 
   public ECBlockGroupStats getECBlockGroupStats() throws IOException {
@@ -179,20 +209,6 @@ public class ErasureCoding {
         rpcClient.invokeConcurrent(
             nss, method, true, false, ECBlockGroupStats.class);
 
-    // Merge the stats from all the namespaces
-    long lowRedundancyBlockGroups = 0;
-    long corruptBlockGroups = 0;
-    long missingBlockGroups = 0;
-    long bytesInFutureBlockGroups = 0;
-    long pendingDeletionBlocks = 0;
-    for (ECBlockGroupStats stats : allStats.values()) {
-      lowRedundancyBlockGroups += stats.getLowRedundancyBlockGroups();
-      corruptBlockGroups += stats.getCorruptBlockGroups();
-      missingBlockGroups += stats.getMissingBlockGroups();
-      bytesInFutureBlockGroups += stats.getBytesInFutureBlockGroups();
-      pendingDeletionBlocks += stats.getPendingDeletionBlocks();
-    }
-    return new ECBlockGroupStats(lowRedundancyBlockGroups, corruptBlockGroups,
-        missingBlockGroups, bytesInFutureBlockGroups, pendingDeletionBlocks);
+    return ECBlockGroupStats.merge(allStats.values());
   }
 }

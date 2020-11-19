@@ -29,6 +29,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.service.AbstractService;
+import org.apache.hadoop.yarn.api.records.timeline.TimelineHealth;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntity;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntityType;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -53,12 +54,7 @@ public class HBaseTimelineReaderImpl
 
   private Configuration hbaseConf = null;
   private Connection conn;
-  private Configuration monitorHBaseConf = null;
-  private Connection monitorConn;
-  private ScheduledExecutorService monitorExecutorService;
-  private TimelineReaderContext monitorContext;
-  private long monitorInterval;
-  private AtomicBoolean hbaseDown = new AtomicBoolean();
+  private TimelineStorageMonitor storageMonitor;
 
   public HBaseTimelineReaderImpl() {
     super(HBaseTimelineReaderImpl.class.getName());
@@ -91,6 +87,13 @@ public class HBaseTimelineReaderImpl
 
     hbaseConf = HBaseTimelineStorageUtils.getTimelineServiceHBaseConf(conf);
     conn = ConnectionFactory.createConnection(hbaseConf);
+    storageMonitor = new HBaseStorageMonitor(conf);
+  }
+
+  @Override
+  protected void serviceStart() throws Exception {
+    super.serviceStart();
+    storageMonitor.start();
   }
 
   @Override
@@ -108,14 +111,7 @@ public class HBaseTimelineReaderImpl
       LOG.info("closing the hbase Connection");
       conn.close();
     }
-    if (monitorExecutorService != null) {
-      monitorExecutorService.shutdownNow();
-      if (!monitorExecutorService.awaitTermination(30, TimeUnit.SECONDS)) {
-        LOG.warn("failed to stop the monitir task in time. " +
-            "will still proceed to close the monitor.");
-      }
-    }
-    monitorConn.close();
+    storageMonitor.stop();
     super.serviceStop();
   }
 
@@ -132,7 +128,7 @@ public class HBaseTimelineReaderImpl
   @Override
   public TimelineEntity getEntity(TimelineReaderContext context,
       TimelineDataToRetrieve dataToRetrieve) throws IOException {
-    checkHBaseDown();
+    storageMonitor.checkStorageIsUp();
     TimelineEntityReader reader =
         TimelineEntityReaderFactory.createSingleEntityReader(context,
             dataToRetrieve);
@@ -143,7 +139,7 @@ public class HBaseTimelineReaderImpl
   public Set<TimelineEntity> getEntities(TimelineReaderContext context,
       TimelineEntityFilters filters, TimelineDataToRetrieve dataToRetrieve)
       throws IOException {
-    checkHBaseDown();
+    storageMonitor.checkStorageIsUp();
     TimelineEntityReader reader =
         TimelineEntityReaderFactory.createMultipleEntitiesReader(context,
             filters, dataToRetrieve);
@@ -153,37 +149,26 @@ public class HBaseTimelineReaderImpl
   @Override
   public Set<String> getEntityTypes(TimelineReaderContext context)
       throws IOException {
-    checkHBaseDown();
+    storageMonitor.checkStorageIsUp();
     EntityTypeReader reader = new EntityTypeReader(context);
     return reader.readEntityTypes(hbaseConf, conn);
   }
 
-  protected static final TimelineEntityFilters MONITOR_FILTERS =
-      new TimelineEntityFilters.Builder().entityLimit(1L).build();
-  protected static final TimelineDataToRetrieve DATA_TO_RETRIEVE =
-      new TimelineDataToRetrieve(null, null, null, null, null, null);
-
-  private class HBaseMonitor implements Runnable {
-    @Override
-    public void run() {
-      try {
-        LOG.info("Running HBase liveness monitor");
-        TimelineEntityReader reader =
-            TimelineEntityReaderFactory.createMultipleEntitiesReader(
-                monitorContext, MONITOR_FILTERS, DATA_TO_RETRIEVE);
-        reader.readEntities(monitorHBaseConf, monitorConn);
-
-        // on success, reset hbase down flag
-        if (hbaseDown.getAndSet(false)) {
-          if(LOG.isDebugEnabled()) {
-            LOG.debug("HBase request succeeded, assuming HBase up");
-          }
-        }
-      } catch (Exception e) {
-        LOG.warn("Got failure attempting to read from timeline storage, " +
-            "assuming HBase down", e);
-        hbaseDown.getAndSet(true);
-      }
+  @Override
+  public TimelineHealth getHealthStatus() {
+    try {
+      storageMonitor.checkStorageIsUp();
+      return new TimelineHealth(TimelineHealth.TimelineHealthStatus.RUNNING,
+          "");
+    } catch (IOException e){
+      return new TimelineHealth(
+          TimelineHealth.TimelineHealthStatus.READER_CONNECTION_FAILURE,
+          "HBase connection is down");
     }
   }
+
+  protected TimelineStorageMonitor getTimelineStorageMonitor() {
+    return storageMonitor;
+  }
+
 }

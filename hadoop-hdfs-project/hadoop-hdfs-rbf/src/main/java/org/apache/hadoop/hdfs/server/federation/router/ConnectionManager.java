@@ -49,13 +49,6 @@ public class ConnectionManager {
   private static final Logger LOG =
       LoggerFactory.getLogger(ConnectionManager.class);
 
-  /** Number of parallel new connections to create. */
-  protected static final int MAX_NEW_CONNECTIONS = 100;
-
-  /** Minimum amount of active connections: 50%. */
-  protected static final float MIN_ACTIVE_RATIO = 0.5f;
-
-
   /** Configuration for the connection manager, pool and sockets. */
   private final Configuration conf;
 
@@ -63,6 +56,8 @@ public class ConnectionManager {
   private final int minSize = 1;
   /** Max number of connections per user + nn. */
   private final int maxSize;
+  /** Min ratio of active connections per user + nn. */
+  private final float minActiveRatio;
 
   /** How often we close a pool for a particular user + nn. */
   private final long poolCleanupPeriodMs;
@@ -77,8 +72,10 @@ public class ConnectionManager {
   private final Lock writeLock = readWriteLock.writeLock();
 
   /** Queue for creating new connections. */
-  private final BlockingQueue<ConnectionPool> creatorQueue =
-      new ArrayBlockingQueue<>(MAX_NEW_CONNECTIONS);
+  private final BlockingQueue<ConnectionPool> creatorQueue;
+  /** Max size of queue for creating new connections. */
+  private final int creatorQueueMaxSize;
+
   /** Create new connections asynchronously. */
   private final ConnectionCreator creator;
   /** Periodic executor to remove stale connection pools. */
@@ -97,16 +94,24 @@ public class ConnectionManager {
   public ConnectionManager(Configuration config) {
     this.conf = config;
 
-    // Configure minimum and maximum connection pools
+    // Configure minimum, maximum and active connection pools
     this.maxSize = this.conf.getInt(
         RBFConfigKeys.DFS_ROUTER_NAMENODE_CONNECTION_POOL_SIZE,
         RBFConfigKeys.DFS_ROUTER_NAMENODE_CONNECTION_POOL_SIZE_DEFAULT);
+    this.minActiveRatio = this.conf.getFloat(
+        RBFConfigKeys.DFS_ROUTER_NAMENODE_CONNECTION_MIN_ACTIVE_RATIO,
+        RBFConfigKeys.DFS_ROUTER_NAMENODE_CONNECTION_MIN_ACTIVE_RATIO_DEFAULT);
 
     // Map with the connections indexed by UGI and Namenode
     this.pools = new HashMap<>();
 
     // Create connections in a thread asynchronously
-    this.creator = new ConnectionCreator(creatorQueue);
+    this.creatorQueueMaxSize = this.conf.getInt(
+        RBFConfigKeys.DFS_ROUTER_NAMENODE_CONNECTION_CREATOR_QUEUE_SIZE,
+        RBFConfigKeys.DFS_ROUTER_NAMENODE_CONNECTION_CREATOR_QUEUE_SIZE_DEFAULT
+        );
+    this.creatorQueue = new ArrayBlockingQueue<>(this.creatorQueueMaxSize);
+    this.creator = new ConnectionCreator(this.creatorQueue);
     this.creator.setDaemon(true);
 
     // Cleanup periods
@@ -199,7 +204,8 @@ public class ConnectionManager {
         pool = this.pools.get(connectionId);
         if (pool == null) {
           pool = new ConnectionPool(
-              this.conf, nnAddress, ugi, this.minSize, this.maxSize, protocol);
+              this.conf, nnAddress, ugi, this.minSize, this.maxSize,
+              this.minActiveRatio, protocol);
           this.pools.put(connectionId, pool);
         }
       } finally {
@@ -213,7 +219,7 @@ public class ConnectionManager {
     if (conn == null || !conn.isUsable()) {
       if (!this.creatorQueue.offer(pool)) {
         LOG.error("Cannot add more than {} connections at the same time",
-            MAX_NEW_CONNECTIONS);
+            this.creatorQueueMaxSize);
       }
     }
 
@@ -322,8 +328,9 @@ public class ConnectionManager {
       long timeSinceLastActive = Time.now() - pool.getLastActiveTime();
       int total = pool.getNumConnections();
       int active = pool.getNumActiveConnections();
+      float poolMinActiveRatio = pool.getMinActiveRatio();
       if (timeSinceLastActive > connectionCleanupPeriodMs ||
-          active < MIN_ACTIVE_RATIO * total) {
+          active < poolMinActiveRatio * total) {
         // Remove and close 1 connection
         List<ConnectionContext> conns = pool.removeConnections(1);
         for (ConnectionContext conn : conns) {
@@ -389,7 +396,7 @@ public class ConnectionManager {
   /**
    * Thread that creates connections asynchronously.
    */
-  private static class ConnectionCreator extends Thread {
+  static class ConnectionCreator extends Thread {
     /** If the creator is running. */
     private boolean running = true;
     /** Queue to push work to. */
@@ -408,8 +415,9 @@ public class ConnectionManager {
           try {
             int total = pool.getNumConnections();
             int active = pool.getNumActiveConnections();
+            float poolMinActiveRatio = pool.getMinActiveRatio();
             if (pool.getNumConnections() < pool.getMaxSize() &&
-                active >= MIN_ACTIVE_RATIO * total) {
+                active >= poolMinActiveRatio * total) {
               ConnectionContext conn = pool.newConnection();
               pool.addConnection(conn);
             } else {
@@ -422,6 +430,8 @@ public class ConnectionManager {
         } catch (InterruptedException e) {
           LOG.error("The connection creator was interrupted");
           this.running = false;
+        } catch (Throwable e) {
+          LOG.error("Fatal error caught by connection creator ", e);
         }
       }
     }

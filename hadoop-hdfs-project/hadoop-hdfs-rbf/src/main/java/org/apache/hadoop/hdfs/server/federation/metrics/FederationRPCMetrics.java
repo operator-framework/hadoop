@@ -60,6 +60,8 @@ public class FederationRPCMetrics implements FederationRPCMBean {
   private MutableCounterLong proxyOpNotImplemented;
   @Metric("Number of operation retries")
   private MutableCounterLong proxyOpRetries;
+  @Metric("Number of operations to hit no namenodes available")
+  private MutableCounterLong proxyOpNoNamenodes;
 
   @Metric("Failed requests due to State Store unavailable")
   private MutableCounterLong routerFailureStateStore;
@@ -83,15 +85,6 @@ public class FederationRPCMetrics implements FederationRPCMBean {
     return ms.register(FederationRPCMetrics.class.getName(),
         "HDFS Federation RPC Metrics",
         new FederationRPCMetrics(conf, rpcServer));
-  }
-
-  /**
-   * Convert nanoseconds to milliseconds.
-   * @param ns Time in nanoseconds.
-   * @return Time in milliseconds.
-   */
-  private static double toMs(double ns) {
-    return ns / 1000000;
   }
 
   /**
@@ -145,6 +138,15 @@ public class FederationRPCMetrics implements FederationRPCMBean {
   @Override
   public long getProxyOpRetries() {
     return proxyOpRetries.value();
+  }
+
+  public void incrProxyOpNoNamenodes() {
+    proxyOpNoNamenodes.incr();
+  }
+
+  @Override
+  public long getProxyOpNoNamenodes() {
+    return proxyOpNoNamenodes.value();
   }
 
   public void incrRouterFailureStateStore() {
@@ -218,6 +220,11 @@ public class FederationRPCMetrics implements FederationRPCMBean {
     return rpcServer.getRPCClient().getJSON();
   }
 
+  @Override
+  public String getAsyncCallerPool() {
+    return rpcServer.getRPCClient().getAsyncCallerPoolJson();
+  }
+
   /**
    * Add the time to proxy an operation from the moment the Router sends it to
    * the Namenode until it replied.
@@ -230,7 +237,7 @@ public class FederationRPCMetrics implements FederationRPCMBean {
 
   @Override
   public double getProxyAvg() {
-    return toMs(proxy.lastStat().mean());
+    return proxy.lastStat().mean();
   }
 
   @Override
@@ -250,7 +257,7 @@ public class FederationRPCMetrics implements FederationRPCMBean {
 
   @Override
   public double getProcessingAvg() {
-    return toMs(processing.lastStat().mean());
+    return processing.lastStat().mean();
   }
 
   @Override

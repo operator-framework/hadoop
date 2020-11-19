@@ -28,6 +28,7 @@ import org.apache.hadoop.security.Groups;
 import org.apache.hadoop.security.ShellBasedUnixGroupsMapping;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
+import org.apache.hadoop.test.Whitebox;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.util.ajax.JSON;
 import org.junit.AfterClass;
@@ -37,7 +38,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 import org.mockito.Mockito;
-import org.mockito.internal.util.reflection.Whitebox;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -55,6 +55,7 @@ import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.core.MediaType;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.lang.reflect.Field;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -701,4 +702,78 @@ public class TestHttpServer extends HttpServerFunctionalTest {
     ServerConnector listener = (ServerConnector)listeners.get(0);
     assertEquals(backlogSize, listener.getAcceptQueueSize());
   }
+
+  @Test
+  public void testIdleTimeout() throws Exception {
+    final int idleTimeout = 1000;
+    Configuration conf = new Configuration();
+    conf.setInt(HttpServer2.HTTP_IDLE_TIMEOUT_MS_KEY, idleTimeout);
+    HttpServer2 srv = createServer("test", conf);
+    Field f = HttpServer2.class.getDeclaredField("listeners");
+    f.setAccessible(true);
+    List<?> listeners = (List<?>) f.get(srv);
+    ServerConnector listener = (ServerConnector)listeners.get(0);
+    assertEquals(idleTimeout, listener.getIdleTimeout());
+  }
+
+  @Test
+  public void testHttpResponseDefaultHeaders() throws Exception {
+    Configuration conf = new Configuration();
+    HttpServer2  httpServer = createTestServer(conf);
+    try {
+      HttpURLConnection conn = getHttpURLConnection(httpServer);
+      assertEquals(HttpServer2.X_XSS_PROTECTION.split(":")[1],
+              conn.getHeaderField(
+              HttpServer2.X_XSS_PROTECTION.split(":")[0]));
+      assertEquals(HttpServer2.X_CONTENT_TYPE_OPTIONS.split(":")[1],
+              conn.getHeaderField(
+              HttpServer2.X_CONTENT_TYPE_OPTIONS.split(":")[0]));
+    } finally {
+      httpServer.stop();
+    }
+  }
+
+  @Test
+  public void testHttpResponseOverrideDefaultHeaders() throws Exception {
+    Configuration conf = new Configuration();
+    conf.set(HttpServer2.HTTP_HEADER_PREFIX+
+            HttpServer2.X_XSS_PROTECTION.split(":")[0], "customXssValue");
+    HttpServer2  httpServer = createTestServer(conf);
+    try {
+      HttpURLConnection conn = getHttpURLConnection(httpServer);
+      assertEquals("customXssValue",
+              conn.getHeaderField(
+              HttpServer2.X_XSS_PROTECTION.split(":")[0])
+      );
+      assertEquals(HttpServer2.X_CONTENT_TYPE_OPTIONS.split(":")[1],
+              conn.getHeaderField(
+              HttpServer2.X_CONTENT_TYPE_OPTIONS.split(":")[0])
+      );
+    } finally {
+      httpServer.stop();
+    }
+  }
+
+  @Test
+  public void testHttpResponseCustomHeaders() throws Exception {
+    Configuration conf = new Configuration();
+    String key = "customKey";
+    String value = "customValue";
+    conf.set(HttpServer2.HTTP_HEADER_PREFIX+key, value);
+    HttpServer2  httpServer = createTestServer(conf);
+    try {
+      HttpURLConnection conn = getHttpURLConnection(httpServer);
+      assertEquals(HttpServer2.X_XSS_PROTECTION.split(":")[1],
+              conn.getHeaderField(
+              HttpServer2.X_XSS_PROTECTION.split(":")[0]));
+      assertEquals(HttpServer2.X_CONTENT_TYPE_OPTIONS.split(":")[1],
+              conn.getHeaderField(
+              HttpServer2.X_CONTENT_TYPE_OPTIONS.split(":")[0]));
+      assertEquals(value, conn.getHeaderField(
+              key));
+    } finally {
+      httpServer.stop();
+    }
+  }
+
 }

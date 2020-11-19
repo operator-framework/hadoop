@@ -49,15 +49,14 @@ public class AutoCreatedLeafQueue extends AbstractAutoCreatedLeafQueue {
   @Override
   public void reinitialize(CSQueue newlyParsedQueue, Resource clusterResource)
       throws IOException {
+    writeLock.lock();
     try {
-      writeLock.lock();
-
       validate(newlyParsedQueue);
 
       ManagedParentQueue managedParentQueue = (ManagedParentQueue) parent;
 
       super.reinitialize(newlyParsedQueue, clusterResource, managedParentQueue
-          .getLeafQueueConfigs(newlyParsedQueue.getQueueName()));
+          .getLeafQueueConfigs(newlyParsedQueue.getQueueShortName()));
 
       //Reset capacities to 0 since reinitialize above
       // queueCapacities to initialize to configured capacity which might
@@ -72,8 +71,8 @@ public class AutoCreatedLeafQueue extends AbstractAutoCreatedLeafQueue {
   public void reinitializeFromTemplate(AutoCreatedLeafQueueConfig
       leafQueueTemplate) throws SchedulerDynamicEditException, IOException {
 
+    writeLock.lock();
     try {
-      writeLock.lock();
 
       // TODO:
       // reinitialize only capacities for now since 0 capacity updates

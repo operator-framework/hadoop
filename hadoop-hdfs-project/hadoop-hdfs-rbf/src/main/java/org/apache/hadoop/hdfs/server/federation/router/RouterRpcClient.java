@@ -18,22 +18,26 @@
 
 package org.apache.hadoop.hdfs.server.federation.router;
 
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IPC_CLIENT_CONNECT_MAX_RETRIES_ON_SOCKET_TIMEOUTS_KEY;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IPC_CLIENT_CONNECT_TIMEOUT_KEY;
+
+import java.io.EOFException;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -53,6 +57,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.NameNodeProxiesClient.ProxyAndInfo;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.protocol.SnapshotException;
 import org.apache.hadoop.hdfs.server.federation.resolver.ActiveNamenodeResolver;
 import org.apache.hadoop.hdfs.server.federation.resolver.FederationNamenodeContext;
 import org.apache.hadoop.hdfs.server.federation.resolver.FederationNamenodeServiceState;
@@ -61,8 +66,11 @@ import org.apache.hadoop.io.retry.RetryPolicies;
 import org.apache.hadoop.io.retry.RetryPolicy;
 import org.apache.hadoop.io.retry.RetryPolicy.RetryAction.RetryDecision;
 import org.apache.hadoop.ipc.RemoteException;
+import org.apache.hadoop.ipc.RetriableException;
 import org.apache.hadoop.ipc.StandbyException;
+import org.apache.hadoop.net.ConnectTimeoutException;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.eclipse.jetty.util.ajax.JSON;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -70,7 +78,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 /**
- * A client proxy for Router -> NN communication using the NN ClientProtocol.
+ * A client proxy for Router to NN communication using the NN ClientProtocol.
  * <p>
  * Provides routers to invoke remote ClientProtocol methods and handle
  * retries/failover.
@@ -92,8 +100,8 @@ public class RouterRpcClient {
       LoggerFactory.getLogger(RouterRpcClient.class);
 
 
-  /** Router identifier. */
-  private final String routerId;
+  /** Router using this RPC client. */
+  private final Router router;
 
   /** Interface to identify the active NN for a nameservice or blockpool ID. */
   private final ActiveNamenodeResolver namenodeResolver;
@@ -116,16 +124,18 @@ public class RouterRpcClient {
    * Create a router RPC client to manage remote procedure calls to NNs.
    *
    * @param conf Hdfs Configuation.
+   * @param router A router using this RPC client.
    * @param resolver A NN resolver to determine the currently active NN in HA.
    * @param monitor Optional performance monitor.
    */
-  public RouterRpcClient(Configuration conf, String identifier,
+  public RouterRpcClient(Configuration conf, Router router,
       ActiveNamenodeResolver resolver, RouterRpcMonitor monitor) {
-    this.routerId = identifier;
+    this.router = router;
 
     this.namenodeResolver = resolver;
 
-    this.connectionManager = new ConnectionManager(conf);
+    Configuration clientConf = getClientConfiguration(conf);
+    this.connectionManager = new ConnectionManager(clientConf);
     this.connectionManager.start();
 
     int numThreads = conf.getInt(
@@ -162,6 +172,31 @@ public class RouterRpcClient {
     this.retryPolicy = RetryPolicies.failoverOnNetworkException(
         RetryPolicies.TRY_ONCE_THEN_FAIL, maxFailoverAttempts, maxRetryAttempts,
         failoverSleepBaseMillis, failoverSleepMaxMillis);
+  }
+
+  /**
+   * Get the configuration for the RPC client. It takes the Router
+   * configuration and transforms it into regular RPC Client configuration.
+   * @param conf Input configuration.
+   * @return Configuration for the RPC client.
+   */
+  private Configuration getClientConfiguration(final Configuration conf) {
+    Configuration clientConf = new Configuration(conf);
+    int maxRetries = conf.getInt(
+        RBFConfigKeys.DFS_ROUTER_CLIENT_MAX_RETRIES_TIME_OUT,
+        RBFConfigKeys.DFS_ROUTER_CLIENT_MAX_RETRIES_TIME_OUT_DEFAULT);
+    if (maxRetries >= 0) {
+      clientConf.setInt(
+          IPC_CLIENT_CONNECT_MAX_RETRIES_ON_SOCKET_TIMEOUTS_KEY, maxRetries);
+    }
+    long connectTimeOut = conf.getTimeDuration(
+        RBFConfigKeys.DFS_ROUTER_CLIENT_CONNECT_TIMEOUT,
+        RBFConfigKeys.DFS_ROUTER_CLIENT_CONNECT_TIMEOUT_DEFAULT,
+        TimeUnit.MILLISECONDS);
+    if (connectTimeOut >= 0) {
+      clientConf.setLong(IPC_CLIENT_CONNECT_TIMEOUT_KEY, connectTimeOut);
+    }
+    return clientConf;
   }
 
   /**
@@ -231,6 +266,19 @@ public class RouterRpcClient {
   }
 
   /**
+   * JSON representation of the async caller thread pool.
+   *
+   * @return String representation of the JSON.
+   */
+  public String getAsyncCallerPoolJson() {
+    final Map<String, Integer> info = new LinkedHashMap<>();
+    info.put("active", executorService.getActiveCount());
+    info.put("total", executorService.getPoolSize());
+    info.put("max", executorService.getMaximumPoolSize());
+    return JSON.toString(info);
+  }
+
+  /**
    * Get ClientProtocol proxy client for a NameNode. Each combination of user +
    * NN must use a unique proxy client. Previously created clients are cached
    * and stored in a connection pool by the ConnectionManager.
@@ -254,7 +302,14 @@ public class RouterRpcClient {
       // for each individual request.
 
       // TODO Add tokens from the federated UGI
-      connection = this.connectionManager.getConnection(ugi, rpcAddress, proto);
+      UserGroupInformation connUGI = ugi;
+      if (UserGroupInformation.isSecurityEnabled()) {
+        UserGroupInformation routerUser = UserGroupInformation.getLoginUser();
+        connUGI = UserGroupInformation.createProxyUser(
+            ugi.getUserName(), routerUser);
+      }
+      connection = this.connectionManager.getConnection(
+          connUGI, rpcAddress, proto);
       LOG.debug("User {} NN {} is using connection {}",
           ugi.getUserName(), rpcAddress, connection);
     } catch (Exception ex) {
@@ -262,7 +317,8 @@ public class RouterRpcClient {
     }
 
     if (connection == null) {
-      throw new IOException("Cannot get a connection to " + rpcAddress);
+      throw new ConnectionNullException("Cannot get a connection to "
+          + rpcAddress);
     }
     return connection;
   }
@@ -293,8 +349,8 @@ public class RouterRpcClient {
    * @param retryCount Number of retries.
    * @param nsId Nameservice ID.
    * @return Retry decision.
-   * @throws IOException Original exception if the retry policy generates one
-   *                     or IOException for no available namenodes.
+   * @throws NoNamenodesAvailableException Exception that the retry policy
+   *         generates for no available namenodes.
    */
   private RetryDecision shouldRetry(final IOException ioe, final int retryCount,
       final String nsId) throws IOException {
@@ -304,8 +360,7 @@ public class RouterRpcClient {
       if (retryCount == 0) {
         return RetryDecision.RETRY;
       } else {
-        throw new IOException("No namenode available under nameservice " + nsId,
-            ioe);
+        throw new NoNamenodesAvailableException(nsId, ioe);
       }
     }
 
@@ -333,17 +388,20 @@ public class RouterRpcClient {
    * @param method Remote ClientProtcol method to invoke.
    * @param params Variable list of parameters matching the method.
    * @return The result of invoking the method.
-   * @throws IOException
+   * @throws ConnectException If it cannot connect to any Namenode.
+   * @throws StandbyException If all Namenodes are in Standby.
+   * @throws IOException If it cannot invoke the method.
    */
   private Object invokeMethod(
       final UserGroupInformation ugi,
       final List<? extends FederationNamenodeContext> namenodes,
       final Class<?> protocol, final Method method, final Object... params)
-          throws IOException {
+          throws ConnectException, StandbyException, IOException {
 
     if (namenodes == null || namenodes.isEmpty()) {
       throw new IOException("No namenodes to invoke " + method.getName() +
-          " with params " + Arrays.toString(params) + " from " + this.routerId);
+          " with params " + Arrays.deepToString(params) + " from "
+          + router.getRouterId());
     }
 
     Object ret = null;
@@ -354,9 +412,9 @@ public class RouterRpcClient {
     Map<FederationNamenodeContext, IOException> ioes = new LinkedHashMap<>();
     for (FederationNamenodeContext namenode : namenodes) {
       ConnectionContext connection = null;
+      String nsId = namenode.getNameserviceId();
+      String rpcAddress = namenode.getRpcAddress();
       try {
-        String nsId = namenode.getNameserviceId();
-        String rpcAddress = namenode.getRpcAddress();
         connection = this.getConnection(ugi, nsId, rpcAddress, protocol);
         ProxyAndInfo<?> client = connection.getClient();
         final Object proxy = client.getProxy();
@@ -379,12 +437,38 @@ public class RouterRpcClient {
             this.rpcMonitor.proxyOpFailureStandby();
           }
           failover = true;
+        } else if (isUnavailableException(ioe)) {
+          if (this.rpcMonitor != null) {
+            this.rpcMonitor.proxyOpFailureCommunicate();
+          }
+          failover = true;
         } else if (ioe instanceof RemoteException) {
           if (this.rpcMonitor != null) {
             this.rpcMonitor.proxyOpComplete(true);
           }
+          RemoteException re = (RemoteException) ioe;
+          ioe = re.unwrapRemoteException();
+          ioe = getCleanException(ioe);
           // RemoteException returned by NN
-          throw (RemoteException) ioe;
+          throw ioe;
+        } else if (ioe instanceof ConnectionNullException) {
+          if (this.rpcMonitor != null) {
+            this.rpcMonitor.proxyOpFailureCommunicate();
+          }
+          LOG.error("Get connection for {} {} error: {}", nsId, rpcAddress,
+              ioe.getMessage());
+          // Throw StandbyException so that client can retry
+          StandbyException se = new StandbyException(ioe.getMessage());
+          se.initCause(ioe);
+          throw se;
+        } else if (ioe instanceof NoNamenodesAvailableException) {
+          if (this.rpcMonitor != null) {
+            this.rpcMonitor.proxyOpNoNamenodes();
+          }
+          LOG.error("Cannot get available namenode for {} {} error: {}",
+              nsId, rpcAddress, ioe.getMessage());
+          // Throw RetriableException so that client can retry
+          throw new RetriableException(ioe);
         } else {
           // Other communication error, this is a failure
           // Communication retries are handled by the retry policy
@@ -406,23 +490,32 @@ public class RouterRpcClient {
 
     // All namenodes were unavailable or in standby
     String msg = "No namenode available to invoke " + method.getName() + " " +
-        Arrays.toString(params);
+        Arrays.deepToString(params) + " in " + namenodes + " from " +
+        router.getRouterId();
     LOG.error(msg);
+    int exConnect = 0;
     for (Entry<FederationNamenodeContext, IOException> entry :
         ioes.entrySet()) {
       FederationNamenodeContext namenode = entry.getKey();
-      String nsId = namenode.getNameserviceId();
-      String nnId = namenode.getNamenodeId();
+      String nnKey = namenode.getNamenodeKey();
       String addr = namenode.getRpcAddress();
       IOException ioe = entry.getValue();
       if (ioe instanceof StandbyException) {
-        LOG.error("{} {} at {} is in Standby", nsId, nnId, addr);
+        LOG.error("{} at {} is in Standby: {}",
+            nnKey, addr, ioe.getMessage());
+      } else if (isUnavailableException(ioe)) {
+        exConnect++;
+        LOG.error("{} at {} cannot be reached: {}",
+            nnKey, addr, ioe.getMessage());
       } else {
-        LOG.error("{} {} at {} error: \"{}\"",
-            nsId, nnId, addr, ioe.getMessage());
+        LOG.error("{} at {} error: \"{}\"", nnKey, addr, ioe.getMessage());
       }
     }
-    throw new StandbyException(msg);
+    if (exConnect == ioes.size()) {
+      throw new ConnectException(msg);
+    } else {
+      throw new StandbyException(msg);
+    }
   }
 
   /**
@@ -469,21 +562,39 @@ public class RouterRpcClient {
           // failover, invoker looks for standby exceptions for failover.
           if (ioe instanceof StandbyException) {
             throw ioe;
+          } else if (isUnavailableException(ioe)) {
+            throw ioe;
           } else {
             throw new StandbyException(ioe.getMessage());
           }
         } else {
-          if (ioe instanceof RemoteException) {
-            RemoteException re = (RemoteException) ioe;
-            ioe = re.unwrapRemoteException();
-            ioe = getCleanException(ioe);
-          }
           throw ioe;
         }
       } else {
         throw new IOException(e);
       }
     }
+  }
+
+  /**
+   * Check if the exception comes from an unavailable subcluster.
+   * @param ioe IOException to check.
+   * @return If the exception comes from an unavailable subcluster.
+   */
+  public static boolean isUnavailableException(IOException ioe) {
+    if (ioe instanceof ConnectException ||
+        ioe instanceof ConnectTimeoutException ||
+        ioe instanceof EOFException ||
+        ioe instanceof StandbyException) {
+      return true;
+    }
+    if (ioe instanceof RetriableException) {
+      Throwable cause = ioe.getCause();
+      if (cause instanceof NoNamenodesAvailableException) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -582,7 +693,7 @@ public class RouterRpcClient {
    * @param block Block used to determine appropriate nameservice.
    * @param method The remote method and parameters to invoke.
    * @return The result of invoking the method.
-   * @throws IOException
+   * @throws IOException If the invoke generated an error.
    */
   public Object invokeSingle(final ExtendedBlock block, RemoteMethod method)
       throws IOException {
@@ -600,7 +711,7 @@ public class RouterRpcClient {
    * @param bpId Block pool identifier.
    * @param method The remote method and parameters to invoke.
    * @return The result of invoking the method.
-   * @throws IOException
+   * @throws IOException If the invoke generated an error.
    */
   public Object invokeSingleBlockPool(final String bpId, RemoteMethod method)
       throws IOException {
@@ -617,7 +728,7 @@ public class RouterRpcClient {
    * @param nsId Target namespace for the method.
    * @param method The remote method and parameters to invoke.
    * @return The result of invoking the method.
-   * @throws IOException
+   * @throws IOException If the invoke generated an error.
    */
   public Object invokeSingle(final String nsId, RemoteMethod method)
       throws IOException {
@@ -637,6 +748,7 @@ public class RouterRpcClient {
    * Re-throws exceptions generated by the remote RPC call as either
    * RemoteException or IOException.
    *
+   * @param <T> The type of the remote method return.
    * @param nsId Target namespace for the method.
    * @param method The remote method and parameters to invoke.
    * @param clazz Class for the return type.
@@ -651,6 +763,27 @@ public class RouterRpcClient {
   }
 
   /**
+   * Invokes a remote method against the specified extendedBlock.
+   *
+   * Re-throws exceptions generated by the remote RPC call as either
+   * RemoteException or IOException.
+   *
+   * @param <T> The type of the remote method return.
+   * @param extendedBlock Target extendedBlock for the method.
+   * @param method The remote method and parameters to invoke.
+   * @param clazz Class for the return type.
+   * @return The result of invoking the method.
+   * @throws IOException If the invoke generated an error.
+   */
+  public <T> T invokeSingle(final ExtendedBlock extendedBlock,
+      RemoteMethod method, Class<T> clazz) throws IOException {
+    String nsId = getNameserviceForBlockPoolId(extendedBlock.getBlockPoolId());
+    @SuppressWarnings("unchecked")
+    T ret = (T)invokeSingle(nsId, method);
+    return ret;
+  }
+
+  /**
    * Invokes a single proxy call for a single location.
    *
    * Re-throws exceptions generated by the remote RPC call as either
@@ -659,12 +792,14 @@ public class RouterRpcClient {
    * @param location RemoteLocation to invoke.
    * @param remoteMethod The remote method and parameters to invoke.
    * @return The result of invoking the method if successful.
-   * @throws IOException
+   * @throws IOException If the invoke generated an error.
    */
-  public Object invokeSingle(final RemoteLocationContext location,
-      RemoteMethod remoteMethod) throws IOException {
+  public <T> T invokeSingle(final RemoteLocationContext location,
+      RemoteMethod remoteMethod, Class<T> clazz) throws IOException {
     List<RemoteLocationContext> locations = Collections.singletonList(location);
-    return invokeSequential(locations, remoteMethod);
+    @SuppressWarnings("unchecked")
+    T ret = (T)invokeSequential(locations, remoteMethod);
+    return ret;
   }
 
   /**
@@ -698,6 +833,7 @@ public class RouterRpcClient {
    * If no expected result class/values are specified, the success condition is
    * a call that does not throw a remote exception.
    *
+   * @param <T> The type of the remote method return.
    * @param locations List of locations/nameservices to call concurrently.
    * @param remoteMethod The remote method and parameters to invoke.
    * @param expectedResultClass In order to be considered a positive result, the
@@ -716,8 +852,7 @@ public class RouterRpcClient {
 
     final UserGroupInformation ugi = RouterRpcServer.getRemoteUser();
     final Method m = remoteMethod.getMethod();
-    IOException firstThrownException = null;
-    IOException lastThrownException = null;
+    List<IOException> thrownExceptions = new ArrayList<>();
     Object firstResult = null;
     // Invoke in priority order
     for (final RemoteLocationContext loc : locations) {
@@ -745,29 +880,33 @@ public class RouterRpcClient {
         ioe = processException(ioe, loc);
 
         // Record it and move on
-        lastThrownException =  ioe;
-        if (firstThrownException == null) {
-          firstThrownException = lastThrownException;
-        }
+        thrownExceptions.add(ioe);
       } catch (Exception e) {
         // Unusual error, ClientProtocol calls always use IOException (or
         // RemoteException). Re-wrap in IOException for compatibility with
         // ClientProtcol.
         LOG.error("Unexpected exception {} proxying {} to {}",
             e.getClass(), m.getName(), ns, e);
-        lastThrownException = new IOException(
+        IOException ioe = new IOException(
             "Unexpected exception proxying API " + e.getMessage(), e);
-        if (firstThrownException == null) {
-          firstThrownException = lastThrownException;
-        }
+        thrownExceptions.add(ioe);
       }
     }
 
-    if (firstThrownException != null) {
-      // re-throw the last exception thrown for compatibility
-      throw firstThrownException;
+    if (!thrownExceptions.isEmpty()) {
+      // An unavailable subcluster may be the actual cause
+      // We cannot surface other exceptions (e.g., FileNotFoundException)
+      for (int i = 0; i < thrownExceptions.size(); i++) {
+        IOException ioe = thrownExceptions.get(i);
+        if (isUnavailableException(ioe)) {
+          throw ioe;
+        }
+      }
+
+      // re-throw the first exception thrown for compatibility
+      throw thrownExceptions.get(0);
     }
-    // Return the last result, whether it is the value we are looking for or a
+    // Return the first result, whether it is the value or not
     @SuppressWarnings("unchecked")
     T ret = (T)firstResult;
     return ret;
@@ -797,6 +936,14 @@ public class RouterRpcClient {
       String newMsg = processExceptionMsg(
           ioe.getMessage(), loc.getDest(), loc.getSrc());
       FileNotFoundException newException = new FileNotFoundException(newMsg);
+      newException.setStackTrace(ioe.getStackTrace());
+      return newException;
+    }
+
+    if (ioe instanceof SnapshotException) {
+      String newMsg = processExceptionMsg(
+          ioe.getMessage(), loc.getDest(), loc.getSrc());
+      SnapshotException newException = new SnapshotException(newMsg);
       newException.setStackTrace(ioe.getStackTrace());
       return newException;
     }
@@ -869,6 +1016,8 @@ public class RouterRpcClient {
   /**
    * Invoke method in all locations and return success if any succeeds.
    *
+   * @param <T> The type of the remote location.
+   * @param <R> The type of the remote method return.
    * @param locations List of remote locations to call concurrently.
    * @param method The remote method and parameters to invoke.
    * @return If the call succeeds in any location.
@@ -897,6 +1046,7 @@ public class RouterRpcClient {
    * RemoteException or IOException.
    *
    * @param <T> The type of the remote location.
+   * @param <R> The type of the remote method return.
    * @param locations List of remote locations to call concurrently.
    * @param method The remote method and parameters to invoke.
    * @throws IOException If all the calls throw an exception.
@@ -915,9 +1065,10 @@ public class RouterRpcClient {
    * RemoteException or IOException.
    *
    * @param <T> The type of the remote location.
+   * @param <R> The type of the remote method return.
    * @param locations List of remote locations to call concurrently.
    * @param method The remote method and parameters to invoke.
-   * @return Result of invoking the method per subcluster: nsId -> result.
+   * @return Result of invoking the method per subcluster: nsId to result.
    * @throws IOException If all the calls throw an exception.
    */
   public <T extends RemoteLocationContext, R> Map<T, R> invokeConcurrent(
@@ -934,6 +1085,7 @@ public class RouterRpcClient {
    * RemoteException or IOException.
    *
    * @param <T> The type of the remote location.
+   * @param <R> The type of the remote method return.
    * @param locations List of remote locations to call concurrently.
    * @param method The remote method and parameters to invoke.
    * @param requireResponse If true an exception will be thrown if all calls do
@@ -964,7 +1116,7 @@ public class RouterRpcClient {
    *          successfully received are returned.
    * @param standby If the requests should go to the standby namenodes too.
    * @param clazz Type of the remote return type.
-   * @return Result of invoking the method per subcluster: nsId -> result.
+   * @return Result of invoking the method per subcluster: nsId to result.
    * @throws IOException If requiredResponse=true and any of the calls throw an
    *           exception.
    */
@@ -993,35 +1145,100 @@ public class RouterRpcClient {
    * @param standby If the requests should go to the standby namenodes too.
    * @param timeOutMs Timeout for each individual call.
    * @param clazz Type of the remote return type.
-   * @return Result of invoking the method per subcluster: nsId -> result.
+   * @return Result of invoking the method per subcluster: nsId to result.
    * @throws IOException If requiredResponse=true and any of the calls throw an
    *           exception.
    */
-  @SuppressWarnings("unchecked")
   public <T extends RemoteLocationContext, R> Map<T, R> invokeConcurrent(
       final Collection<T> locations, final RemoteMethod method,
       boolean requireResponse, boolean standby, long timeOutMs, Class<R> clazz)
           throws IOException {
+    final List<RemoteResult<T, R>> results = invokeConcurrent(
+        locations, method, standby, timeOutMs, clazz);
+
+    // Go over the results and exceptions
+    final Map<T, R> ret = new TreeMap<>();
+    final List<IOException> thrownExceptions = new ArrayList<>();
+    IOException firstUnavailableException = null;
+    for (final RemoteResult<T, R> result : results) {
+      if (result.hasException()) {
+        IOException ioe = result.getException();
+        thrownExceptions.add(ioe);
+        // Track unavailable exceptions to throw them first
+        if (isUnavailableException(ioe)) {
+          firstUnavailableException = ioe;
+        }
+      }
+      if (result.hasResult()) {
+        ret.put(result.getLocation(), result.getResult());
+      }
+    }
+
+    // Throw exceptions if needed
+    if (!thrownExceptions.isEmpty()) {
+      // Throw if response from all servers required or no results
+      if (requireResponse || ret.isEmpty()) {
+        // Throw unavailable exceptions first
+        if (firstUnavailableException != null) {
+          throw firstUnavailableException;
+        } else {
+          throw thrownExceptions.get(0);
+        }
+      }
+    }
+
+    return ret;
+  }
+
+  /**
+   * Invokes multiple concurrent proxy calls to different clients. Returns an
+   * array of results.
+   *
+   * Re-throws exceptions generated by the remote RPC call as either
+   * RemoteException or IOException.
+   *
+   * @param <T> The type of the remote location.
+   * @param <R> The type of the remote method return
+   * @param locations List of remote locations to call concurrently.
+   * @param method The remote method and parameters to invoke.
+   * @param standby If the requests should go to the standby namenodes too.
+   * @param timeOutMs Timeout for each individual call.
+   * @param clazz Type of the remote return type.
+   * @return Result of invoking the method per subcluster (list of results).
+   *         This includes the exception for each remote location.
+   * @throws IOException If there are errors invoking the method.
+   */
+  @SuppressWarnings("unchecked")
+  public <T extends RemoteLocationContext, R> List<RemoteResult<T, R>>
+      invokeConcurrent(final Collection<T> locations,
+          final RemoteMethod method, boolean standby, long timeOutMs,
+          Class<R> clazz) throws IOException {
 
     final UserGroupInformation ugi = RouterRpcServer.getRemoteUser();
     final Method m = method.getMethod();
 
     if (locations.isEmpty()) {
       throw new IOException("No remote locations available");
-    } else if (locations.size() == 1) {
+    } else if (locations.size() == 1 && timeOutMs <= 0) {
       // Shortcut, just one call
       T location = locations.iterator().next();
       String ns = location.getNameserviceId();
       final List<? extends FederationNamenodeContext> namenodes =
           getNamenodesForNameservice(ns);
-      Class<?> proto = method.getProtocol();
-      Object[] paramList = method.getParams(location);
-      Object result = invokeMethod(ugi, namenodes, proto, m, paramList);
-      return Collections.singletonMap(location, clazz.cast(result));
+      try {
+        Class<?> proto = method.getProtocol();
+        Object[] paramList = method.getParams(location);
+        R result = (R) invokeMethod(ugi, namenodes, proto, m, paramList);
+        RemoteResult<T, R> remoteResult = new RemoteResult<>(location, result);
+        return Collections.singletonList(remoteResult);
+      } catch (IOException ioe) {
+        // Localize the exception
+        throw processException(ioe, location);
+      }
     }
 
-    List<T> orderedLocations = new LinkedList<>();
-    Set<Callable<Object>> callables = new HashSet<>();
+    List<T> orderedLocations = new ArrayList<>();
+    List<Callable<Object>> callables = new ArrayList<>();
     for (final T location : locations) {
       String nsId = location.getNameserviceId();
       final List<? extends FederationNamenodeContext> namenodes =
@@ -1039,20 +1256,12 @@ public class RouterRpcClient {
             nnLocation = (T)new RemoteLocation(nsId, nnId, location.getDest());
           }
           orderedLocations.add(nnLocation);
-          callables.add(new Callable<Object>() {
-            public Object call() throws Exception {
-              return invokeMethod(ugi, nnList, proto, m, paramList);
-            }
-          });
+          callables.add(() -> invokeMethod(ugi, nnList, proto, m, paramList));
         }
       } else {
         // Call the objectGetter in order of nameservices in the NS list
         orderedLocations.add(location);
-        callables.add(new Callable<Object>() {
-          public Object call() throws Exception {
-            return invokeMethod(ugi, namenodes, proto, m, paramList);
-          }
-        });
+        callables.add(() ->  invokeMethod(ugi, namenodes, proto, m, paramList));
       }
     }
 
@@ -1068,21 +1277,20 @@ public class RouterRpcClient {
       } else {
         futures = executorService.invokeAll(callables);
       }
-      Map<T, R> results = new TreeMap<>();
-      Map<T, IOException> exceptions = new TreeMap<>();
+      List<RemoteResult<T, R>> results = new ArrayList<>();
       for (int i=0; i<futures.size(); i++) {
         T location = orderedLocations.get(i);
         try {
           Future<Object> future = futures.get(i);
-          Object result = future.get();
-          results.put(location, clazz.cast(result));
+          R result = (R) future.get();
+          results.add(new RemoteResult<>(location, result));
         } catch (CancellationException ce) {
           T loc = orderedLocations.get(i);
           String msg = "Invocation to \"" + loc + "\" for \""
               + method.getMethodName() + "\" timed out";
           LOG.error(msg);
           IOException ioe = new SubClusterTimeoutException(msg);
-          exceptions.put(location, ioe);
+          results.add(new RemoteResult<>(location, ioe));
         } catch (ExecutionException ex) {
           Throwable cause = ex.getCause();
           LOG.debug("Canot execute {} in {}: {}",
@@ -1097,22 +1305,8 @@ public class RouterRpcClient {
                 m.getName() + ": " + cause.getMessage(), cause);
           }
 
-          // Response from all servers required, use this error.
-          if (requireResponse) {
-            throw ioe;
-          }
-
           // Store the exceptions
-          exceptions.put(location, ioe);
-        }
-      }
-
-      // Throw the exception for the first location if there are no results
-      if (results.isEmpty()) {
-        T location = orderedLocations.get(0);
-        IOException ioe = exceptions.get(location);
-        if (ioe != null) {
-          throw ioe;
+          results.add(new RemoteResult<>(location, ioe));
         }
       }
 
@@ -1126,7 +1320,7 @@ public class RouterRpcClient {
       String msg = "Not enough client threads " + active + "/" + total;
       LOG.error(msg);
       throw new StandbyException(
-          "Router " + routerId + " is overloaded: " + msg);
+          "Router " + router.getRouterId() + " is overloaded: " + msg);
     } catch (InterruptedException ex) {
       LOG.error("Unexpected error while invoking API: {}", ex.getMessage());
       throw new IOException(
@@ -1150,7 +1344,7 @@ public class RouterRpcClient {
 
     if (namenodes == null || namenodes.isEmpty()) {
       throw new IOException("Cannot locate a registered namenode for " + nsId +
-          " from " + this.routerId);
+          " from " + router.getRouterId());
     }
     return namenodes;
   }
@@ -1171,7 +1365,7 @@ public class RouterRpcClient {
 
     if (namenodes == null || namenodes.isEmpty()) {
       throw new IOException("Cannot locate a registered namenode for " + bpId +
-          " from " + this.routerId);
+          " from " + router.getRouterId());
     }
     return namenodes;
   }

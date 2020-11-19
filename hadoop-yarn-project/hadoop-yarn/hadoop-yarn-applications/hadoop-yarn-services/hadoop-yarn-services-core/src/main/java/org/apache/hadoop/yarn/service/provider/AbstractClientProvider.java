@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.service.provider;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -68,18 +68,18 @@ public abstract class AbstractClientProvider {
    * Validate the artifact.
    * @param artifact
    */
-  public abstract void validateArtifact(Artifact artifact, FileSystem
-      fileSystem) throws IOException;
+  public abstract void validateArtifact(Artifact artifact, String compName,
+      FileSystem fileSystem) throws IOException;
 
-  protected abstract void validateConfigFile(ConfigFile configFile, FileSystem
-      fileSystem) throws IOException;
+  protected abstract void validateConfigFile(ConfigFile configFile,
+      String compName, FileSystem fileSystem) throws IOException;
 
   /**
    * Validate the config files.
    * @param configFiles config file list
    * @param fs file system
    */
-  public void validateConfigFiles(List<ConfigFile> configFiles,
+  public void validateConfigFiles(List<ConfigFile> configFiles, String compName,
       FileSystem fs) throws IOException {
     Set<String> destFileSet = new HashSet<>();
 
@@ -128,7 +128,7 @@ public abstract class AbstractClientProvider {
       }
 
       if (StringUtils.isEmpty(file.getDestFile())) {
-        throw new IllegalArgumentException("Dest_file is empty.");
+        throw new IllegalArgumentException("dest_file is empty.");
       }
 
       if (destFileSet.contains(file.getDestFile())) {
@@ -144,7 +144,7 @@ public abstract class AbstractClientProvider {
       }
 
       // provider-specific validation
-      validateConfigFile(file, fs);
+      validateConfigFile(file, compName, fs);
     }
   }
 }

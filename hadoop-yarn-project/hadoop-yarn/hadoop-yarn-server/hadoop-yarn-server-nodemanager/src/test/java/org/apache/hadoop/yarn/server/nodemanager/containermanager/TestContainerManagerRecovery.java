@@ -18,12 +18,13 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Matchers.isA;
+import static org.mockito.ArgumentMatchers.isA;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -47,6 +48,7 @@ import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.UnsupportedFileSystemException;
 import org.apache.hadoop.io.DataOutputBuffer;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.net.ServerSocketUtil;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -83,8 +85,7 @@ import org.apache.hadoop.yarn.server.nodemanager.ContainerExecutor;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.DeletionService;
 import org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerService;
-import org.apache.hadoop.yarn.server.nodemanager.NodeHealthCheckerService;
-import org.apache.hadoop.yarn.server.nodemanager.NodeManager;
+import org.apache.hadoop.yarn.server.nodemanager.health.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.NodeManager.NMContext;
 import org.apache.hadoop.yarn.server.nodemanager.NodeStatusUpdater;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.Application;
@@ -106,6 +107,7 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor.Contai
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.scheduler.ContainerScheduler;
 
 import org.apache.hadoop.yarn.server.nodemanager.metrics.NodeManagerMetrics;
+import org.apache.hadoop.yarn.server.nodemanager.metrics.TestNodeManagerMetrics;
 import org.apache.hadoop.yarn.server.nodemanager.recovery.NMMemoryStateStoreService;
 import org.apache.hadoop.yarn.server.nodemanager.recovery.NMNullStateStoreService;
 import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService;
@@ -154,8 +156,7 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     delSrvc.init(conf);
     exec = createContainerExecutor();
     dirsHandler = new LocalDirsHandlerService();
-    nodeHealthChecker = new NodeHealthCheckerService(
-        NodeManager.getNodeHealthScriptRunner(conf), dirsHandler);
+    nodeHealthChecker = new NodeHealthCheckerService(dirsHandler);
     nodeHealthChecker.init(conf);
 
   }
@@ -300,7 +301,7 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     // simulate log aggregation completion
     app.handle(new ApplicationEvent(app.getAppId(),
         ApplicationEventType.APPLICATION_RESOURCES_CLEANEDUP));
-    assertEquals(app.getApplicationState(), ApplicationState.FINISHED);
+    assertThat(app.getApplicationState()).isEqualTo(ApplicationState.FINISHED);
     app.handle(new ApplicationEvent(app.getAppId(),
         ApplicationEventType.APPLICATION_LOG_HANDLING_FINISHED));
 
@@ -360,7 +361,7 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
 
     app.handle(new ApplicationEvent(app.getAppId(),
         ApplicationEventType.APPLICATION_RESOURCES_CLEANEDUP));
-    assertEquals(app.getApplicationState(), ApplicationState.FINISHED);
+    assertThat(app.getApplicationState()).isEqualTo(ApplicationState.FINISHED);
     // application is still in NM context.
     assertEquals(1, context.getApplications().size());
 
@@ -384,7 +385,7 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     // is needed.
     app.handle(new ApplicationEvent(app.getAppId(),
         ApplicationEventType.APPLICATION_RESOURCES_CLEANEDUP));
-    assertEquals(app.getApplicationState(), ApplicationState.FINISHED);
+    assertThat(app.getApplicationState()).isEqualTo(ApplicationState.FINISHED);
 
     // simulate log aggregation failed.
     app.handle(new ApplicationEvent(app.getAppId(),
@@ -397,6 +398,61 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     cm.init(conf);
     cm.start();
     assertTrue(context.getApplications().isEmpty());
+    cm.stop();
+  }
+
+  @Test
+  public void testNodeManagerMetricsRecovery() throws Exception {
+    conf.setBoolean(YarnConfiguration.NM_RECOVERY_ENABLED, true);
+    conf.setBoolean(YarnConfiguration.NM_RECOVERY_SUPERVISED, true);
+
+    NMStateStoreService stateStore = new NMMemoryStateStoreService();
+    stateStore.init(conf);
+    stateStore.start();
+    Context context = createContext(conf, stateStore);
+    ContainerManagerImpl cm = createContainerManager(context, delSrvc);
+    cm.init(conf);
+    cm.start();
+    metrics.addResource(Resource.newInstance(10240, 8));
+
+    // add an application by starting a container
+    ApplicationId appId = ApplicationId.newInstance(0, 1);
+    ApplicationAttemptId attemptId = ApplicationAttemptId.newInstance(appId, 1);
+    ContainerId cid = ContainerId.newContainerId(attemptId, 1);
+    Map<String, String> containerEnv = Collections.emptyMap();
+    Map<String, ByteBuffer> serviceData = Collections.emptyMap();
+    Map<String, LocalResource> localResources = Collections.emptyMap();
+    List<String> commands = Arrays.asList("sleep 60s".split(" "));
+    ContainerLaunchContext clc = ContainerLaunchContext.newInstance(
+        localResources, containerEnv, commands, serviceData,
+        null, null);
+    StartContainersResponse startResponse = startContainer(context, cm, cid,
+        clc, null, ContainerType.TASK);
+    assertTrue(startResponse.getFailedRequests().isEmpty());
+    assertEquals(1, context.getApplications().size());
+    Application app = context.getApplications().get(appId);
+    assertNotNull(app);
+
+    // make sure the container reaches RUNNING state
+    waitForNMContainerState(cm, cid,
+        org.apache.hadoop.yarn.server.nodemanager
+            .containermanager.container.ContainerState.RUNNING);
+    TestNodeManagerMetrics.checkMetrics(1, 0, 0, 0, 0, 1, 1, 1, 9, 1, 7);
+
+    // restart and verify metrics could be recovered
+    cm.stop();
+    DefaultMetricsSystem.shutdown();
+    metrics = NodeManagerMetrics.create();
+    metrics.addResource(Resource.newInstance(10240, 8));
+    TestNodeManagerMetrics.checkMetrics(0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 8);
+    context = createContext(conf, stateStore);
+    cm = createContainerManager(context, delSrvc);
+    cm.init(conf);
+    cm.start();
+    assertEquals(1, context.getApplications().size());
+    app = context.getApplications().get(appId);
+    assertNotNull(app);
+    TestNodeManagerMetrics.checkMetrics(1, 0, 0, 0, 0, 1, 1, 1, 9, 1, 7);
     cm.stop();
   }
 
@@ -470,8 +526,9 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     assertNotNull(app);
 
     ResourceUtilization utilization =
-        ResourceUtilization.newInstance(1024, 2048, 0.25F);
-    assertEquals(cm.getContainerScheduler().getNumRunningContainers(), 1);
+        ResourceUtilization.newInstance(1024, 2048, 1.0F);
+    assertThat(cm.getContainerScheduler().getNumRunningContainers()).
+        isEqualTo(1);
     assertEquals(utilization,
         cm.getContainerScheduler().getCurrentUtilization());
 
@@ -487,7 +544,8 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     assertNotNull(app);
     waitForNMContainerState(cm, cid, ContainerState.RUNNING);
 
-    assertEquals(cm.getContainerScheduler().getNumRunningContainers(), 1);
+    assertThat(cm.getContainerScheduler().getNumRunningContainers()).
+        isEqualTo(1);
     assertEquals(utilization,
         cm.getContainerScheduler().getCurrentUtilization());
     cm.stop();
@@ -679,7 +737,8 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
       @Override
       protected void authorizeGetAndStopContainerRequest(
           ContainerId containerId, Container container,
-          boolean stopRequest, NMTokenIdentifier identifier)
+          boolean stopRequest, NMTokenIdentifier identifier,
+          String remoteUser)
           throws YarnException {
         if(container == null || container.getUser().equals("Fail")){
           throw new YarnException("Reject this container");
@@ -733,6 +792,7 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
       .byteValue() }));
     context.getContainerTokenSecretManager().setMasterKey(masterKey);
     context.getNMTokenSecretManager().setMasterKey(masterKey);
+    context.setContainerExecutor(exec);
     return context;
   }
 

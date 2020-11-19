@@ -29,7 +29,7 @@ import org.apache.hadoop.hdfs.server.federation.store.protocol.impl.pb.Federatio
 import org.apache.hadoop.hdfs.server.federation.store.records.RouterState;
 import org.apache.hadoop.hdfs.server.federation.store.records.StateStoreVersion;
 
-import com.google.protobuf.Message;
+import org.apache.hadoop.thirdparty.protobuf.Message;
 
 /**
  * Protobuf implementation of the RouterState record.
@@ -182,7 +182,9 @@ public class RouterStatePBImpl extends RouterState implements PBRecord {
 
   @Override
   public void setDateModified(long time) {
-    this.translator.getBuilder().setDateModified(time);
+    if (getStatus() != RouterServiceState.EXPIRED) {
+      this.translator.getBuilder().setDateModified(time);
+    }
   }
 
   @Override
@@ -198,5 +200,15 @@ public class RouterStatePBImpl extends RouterState implements PBRecord {
   @Override
   public long getDateCreated() {
     return this.translator.getProtoOrBuilder().getDateCreated();
+  }
+
+  @Override
+  public void setAdminAddress(String adminAddress) {
+    this.translator.getBuilder().setAdminAddress(adminAddress);
+  }
+
+  @Override
+  public String getAdminAddress() {
+    return this.translator.getProtoOrBuilder().getAdminAddress();
   }
 }

@@ -22,7 +22,7 @@ package org.apache.hadoop.yarn.server.resourcemanager.scheduler.constraint;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Maps;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.yarn.api.records.AllocationTagNamespaceType;
@@ -115,6 +115,11 @@ public class AllocationTagsManager {
 
     private void removeTagFromInnerMap(Map<String, Long> innerMap, String tag) {
       Long count = innerMap.get(tag);
+      if (count == null) {
+        LOG.warn("Trying to remove tags, however the tag " + tag
+            + " no longer exists on this node/rack.");
+        return;
+      }
       if (count > 1) {
         innerMap.put(tag, count - 1);
       } else {

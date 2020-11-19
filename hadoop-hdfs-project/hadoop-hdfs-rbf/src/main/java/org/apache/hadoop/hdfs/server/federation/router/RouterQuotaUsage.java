@@ -18,6 +18,7 @@
 package org.apache.hadoop.hdfs.server.federation.router;
 
 import org.apache.hadoop.fs.QuotaUsage;
+import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.DSQuotaExceededException;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.NSQuotaExceededException;
@@ -67,51 +68,92 @@ public final class RouterQuotaUsage extends QuotaUsage {
       super.spaceQuota(spaceQuota);
       return this;
     }
+
+    @Override
+    public Builder typeConsumed(long[] typeConsumed) {
+      super.typeConsumed(typeConsumed);
+      return this;
+    }
+
+    @Override
+    public Builder typeQuota(long[] typeQuota) {
+      super.typeQuota(typeQuota);
+      return this;
+    }
+
+    @Override
+    public Builder typeQuota(StorageType type, long quota) {
+      super.typeQuota(type, quota);
+      return this;
+    }
   }
 
   /**
    * Verify if namespace quota is violated once quota is set. Relevant
    * method {@link DirectoryWithQuotaFeature#verifyNamespaceQuota}.
-   * @throws NSQuotaExceededException
+   * @throws NSQuotaExceededException If the quota is exceeded.
    */
   public void verifyNamespaceQuota() throws NSQuotaExceededException {
-    if (Quota.isViolated(getQuota(), getFileAndDirectoryCount())) {
-      throw new NSQuotaExceededException(getQuota(),
-          getFileAndDirectoryCount());
+    long quota = getQuota();
+    long fileAndDirectoryCount = getFileAndDirectoryCount();
+    if (Quota.isViolated(quota, fileAndDirectoryCount)) {
+      throw new NSQuotaExceededException(quota, fileAndDirectoryCount);
     }
   }
 
   /**
    * Verify if storage space quota is violated once quota is set. Relevant
    * method {@link DirectoryWithQuotaFeature#verifyStoragespaceQuota}.
-   * @throws DSQuotaExceededException
+   * @throws DSQuotaExceededException If the quota is exceeded.
    */
   public void verifyStoragespaceQuota() throws DSQuotaExceededException {
-    if (Quota.isViolated(getSpaceQuota(), getSpaceConsumed())) {
-      throw new DSQuotaExceededException(getSpaceQuota(), getSpaceConsumed());
+    long spaceQuota = getSpaceQuota();
+    long spaceConsumed = getSpaceConsumed();
+    if (Quota.isViolated(spaceQuota, spaceConsumed)) {
+      throw new DSQuotaExceededException(spaceQuota, spaceConsumed);
+    }
+  }
+
+  /**
+   * Verify space quota by storage type is violated once quota is set. Relevant
+   * method {@link DirectoryWithQuotaFeature#verifyQuotaByStorageType}.
+   * @throws DSQuotaExceededException If the quota is exceeded.
+   */
+  public void verifyQuotaByStorageType() throws DSQuotaExceededException {
+    for (StorageType t: StorageType.getTypesSupportingQuota()) {
+      long typeQuota = getTypeQuota(t);
+      if (typeQuota == HdfsConstants.QUOTA_RESET) {
+        continue;
+      }
+      long typeConsumed = getTypeConsumed(t);
+      if (Quota.isViolated(typeQuota, typeConsumed)) {
+        throw new DSQuotaExceededException(typeQuota, typeConsumed);
+      }
     }
   }
 
   @Override
   public String toString() {
-    String nsQuota = String.valueOf(getQuota());
-    String nsCount = String.valueOf(getFileAndDirectoryCount());
-    if (getQuota() == HdfsConstants.QUOTA_DONT_SET) {
-      nsQuota = "-";
-      nsCount = "-";
+    String nsQuota = "-";
+    String nsCount = "-";
+    long quota = getQuota();
+    if (quota != HdfsConstants.QUOTA_RESET) {
+      nsQuota = String.valueOf(quota);
+      nsCount = String.valueOf(getFileAndDirectoryCount());
     }
 
-    String ssQuota = StringUtils.byteDesc(getSpaceQuota());
-    String ssCount = StringUtils.byteDesc(getSpaceConsumed());
-    if (getSpaceQuota() == HdfsConstants.QUOTA_DONT_SET) {
-      ssQuota = "-";
-      ssCount = "-";
+    String ssQuota = "-";
+    String ssCount = "-";
+    long spaceQuota = getSpaceQuota();
+    if (spaceQuota != HdfsConstants.QUOTA_RESET) {
+      ssQuota = StringUtils.byteDesc(spaceQuota);
+      ssCount = StringUtils.byteDesc(getSpaceConsumed());
     }
 
     StringBuilder str = new StringBuilder();
     str.append("[NsQuota: ").append(nsQuota).append("/")
-        .append(nsCount);
-    str.append(", SsQuota: ").append(ssQuota)
+        .append(nsCount)
+        .append(", SsQuota: ").append(ssQuota)
         .append("/").append(ssCount)
         .append("]");
     return str.toString();

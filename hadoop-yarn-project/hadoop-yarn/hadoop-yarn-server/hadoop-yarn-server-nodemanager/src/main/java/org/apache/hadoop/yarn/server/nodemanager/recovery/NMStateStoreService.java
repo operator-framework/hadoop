@@ -20,10 +20,10 @@ package org.apache.hadoop.yarn.server.nodemanager.recovery;
 
 import java.io.IOException;
 import java.io.Serializable;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
@@ -67,12 +67,11 @@ public abstract class NMStateStoreService extends AbstractService {
   }
 
   public static class RecoveredApplicationsState {
-    List<ContainerManagerApplicationProto> applications;
+    RecoveryIterator<ContainerManagerApplicationProto> it = null;
 
-    public List<ContainerManagerApplicationProto> getApplications() {
-      return applications;
+    public RecoveryIterator<ContainerManagerApplicationProto> getIterator() {
+      return it;
     }
-
   }
 
   /**
@@ -106,6 +105,15 @@ public abstract class NMStateStoreService extends AbstractService {
         RecoveredContainerType.RECOVER;
     private long startTime;
     private ResourceMappings resMappings = new ResourceMappings();
+    private final ContainerId containerId;
+
+    RecoveredContainerState(ContainerId containerId){
+      this.containerId = containerId;
+    }
+
+    public ContainerId getContainerId() {
+      return containerId;
+    }
 
     public RecoveredContainerStatus getStatus() {
       return status;
@@ -211,27 +219,31 @@ public abstract class NMStateStoreService extends AbstractService {
   }
 
   public static class LocalResourceTrackerState {
-    List<LocalizedResourceProto> localizedResources =
-        new ArrayList<LocalizedResourceProto>();
-    Map<LocalResourceProto, Path> inProgressResources =
-        new HashMap<LocalResourceProto, Path>();
+    final private RecoveryIterator<LocalizedResourceProto>
+        completedResourcesIterator;
+    final private RecoveryIterator<Entry<LocalResourceProto, Path>>
+        startedResourcesIterator;
 
-    public List<LocalizedResourceProto> getLocalizedResources() {
-      return localizedResources;
+    LocalResourceTrackerState(RecoveryIterator<LocalizedResourceProto> crIt,
+        RecoveryIterator<Entry<LocalResourceProto, Path>> srIt) {
+      this.completedResourcesIterator = crIt;
+      this.startedResourcesIterator = srIt;
     }
 
-    public Map<LocalResourceProto, Path> getInProgressResources() {
-      return inProgressResources;
+    public RecoveryIterator<LocalizedResourceProto>
+        getCompletedResourcesIterator() {
+      return completedResourcesIterator;
     }
 
-    public boolean isEmpty() {
-      return localizedResources.isEmpty() && inProgressResources.isEmpty();
+    public RecoveryIterator<Entry<LocalResourceProto, Path>>
+        getStartedResourcesIterator() {
+      return startedResourcesIterator;
     }
   }
 
   public static class RecoveredUserResources {
     LocalResourceTrackerState privateTrackerState =
-        new LocalResourceTrackerState();
+        new LocalResourceTrackerState(null, null);
     Map<ApplicationId, LocalResourceTrackerState> appTrackerStates =
         new HashMap<ApplicationId, LocalResourceTrackerState>();
 
@@ -247,31 +259,34 @@ public abstract class NMStateStoreService extends AbstractService {
 
   public static class RecoveredLocalizationState {
     LocalResourceTrackerState publicTrackerState =
-        new LocalResourceTrackerState();
-    Map<String, RecoveredUserResources> userResources =
-        new HashMap<String, RecoveredUserResources>();
+        new LocalResourceTrackerState(null, null);
+    RecoveryIterator<Entry<String, RecoveredUserResources>> it = null;
 
     public LocalResourceTrackerState getPublicTrackerState() {
       return publicTrackerState;
     }
 
-    public Map<String, RecoveredUserResources> getUserResources() {
-      return userResources;
+    public RecoveryIterator<Entry<String, RecoveredUserResources>> getIterator() {
+      return it;
     }
   }
 
   public static class RecoveredDeletionServiceState {
-    List<DeletionServiceDeleteTaskProto> tasks;
+    RecoveryIterator<DeletionServiceDeleteTaskProto> it = null;
 
-    public List<DeletionServiceDeleteTaskProto> getTasks() {
-      return tasks;
+    public RecoveryIterator<DeletionServiceDeleteTaskProto> getIterator(){
+      return it;
     }
   }
 
   public static class RecoveredNMTokensState {
     MasterKey currentMasterKey;
     MasterKey previousMasterKey;
-    Map<ApplicationAttemptId, MasterKey> applicationMasterKeys;
+    RecoveryIterator<Entry<ApplicationAttemptId, MasterKey>> it = null;
+
+    public RecoveryIterator<Entry<ApplicationAttemptId, MasterKey>> getIterator() {
+      return it;
+    }
 
     public MasterKey getCurrentMasterKey() {
       return currentMasterKey;
@@ -281,15 +296,16 @@ public abstract class NMStateStoreService extends AbstractService {
       return previousMasterKey;
     }
 
-    public Map<ApplicationAttemptId, MasterKey> getApplicationMasterKeys() {
-      return applicationMasterKeys;
-    }
   }
 
   public static class RecoveredContainerTokensState {
     MasterKey currentMasterKey;
     MasterKey previousMasterKey;
-    Map<ContainerId, Long> activeTokens;
+    RecoveryIterator<Entry<ContainerId, Long>> it = null;
+
+    public RecoveryIterator<Entry<ContainerId, Long>> getIterator() {
+      return it;
+    }
 
     public MasterKey getCurrentMasterKey() {
       return currentMasterKey;
@@ -299,9 +315,6 @@ public abstract class NMStateStoreService extends AbstractService {
       return previousMasterKey;
     }
 
-    public Map<ContainerId, Long> getActiveTokens() {
-      return activeTokens;
-    }
   }
 
   public static class RecoveredLogDeleterState {
@@ -400,11 +413,10 @@ public abstract class NMStateStoreService extends AbstractService {
 
 
   /**
-   * Load the state of containers
-   * @return recovered state for containers
-   * @throws IOException
+   * get the Recovered Container State Iterator
+   * @return recovery iterator
    */
-  public abstract List<RecoveredContainerState> loadContainersState()
+  public abstract RecoveryIterator<RecoveredContainerState> getContainerStateIterator()
       throws IOException;
 
   /**
@@ -416,7 +428,8 @@ public abstract class NMStateStoreService extends AbstractService {
    * @throws IOException
    */
   public abstract void storeContainer(ContainerId containerId,
-      int containerVersion, long startTime, StartContainerRequest startRequest)
+          int containerVersion, long startTime,
+          StartContainerRequest startRequest)
       throws IOException;
 
   /**

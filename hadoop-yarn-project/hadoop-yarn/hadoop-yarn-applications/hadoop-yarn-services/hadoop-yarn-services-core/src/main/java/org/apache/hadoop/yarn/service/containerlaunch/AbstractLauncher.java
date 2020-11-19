@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.yarn.service.containerlaunch;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
@@ -165,8 +166,8 @@ public class AbstractLauncher {
           if (sb.length() > 0) {
             sb.append(",");
           }
-          sb.append(mount.getKey()).append(":");
-          sb.append(mount.getValue()).append(":ro");
+          sb.append(mount.getKey()).append(":")
+              .append(mount.getValue()).append(":ro");
         }
         env.put(ENV_DOCKER_CONTAINER_MOUNTS, sb.toString());
       }
@@ -195,7 +196,7 @@ public class AbstractLauncher {
 
         String key = entry.getKey();
         LocalResource val = entry.getValue();
-        log.debug(key + "=" + ServiceUtils.stringify(val.getResource()));
+        log.debug("{} = {}", key, ServiceUtils.stringify(val.getResource()));
       }
     }
   }
@@ -254,4 +255,8 @@ public class AbstractLauncher {
     this.runPrivilegedContainer = runPrivilegedContainer;
   }
 
+  @VisibleForTesting
+  public String getDockerImage() {
+    return dockerImage;
+  }
 }

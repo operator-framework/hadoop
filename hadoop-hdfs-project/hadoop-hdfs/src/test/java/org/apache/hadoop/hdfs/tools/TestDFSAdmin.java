@@ -22,14 +22,16 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCK_PLACEMENT_EC_CLASSNAME_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCK_REPLICATOR_CLASSNAME_KEY;
 
 import com.google.common.base.Supplier;
 import com.google.common.collect.Lists;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.lang.text.StrBuilder;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.text.TextStringBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.ReconfigurationUtil;
 import org.apache.hadoop.fs.ChecksumException;
@@ -91,7 +93,7 @@ import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.hamcrest.CoreMatchers.containsString;
-import static org.mockito.Matchers.any;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -99,7 +101,7 @@ import static org.mockito.Mockito.when;
  * set/clrSpaceQuote are tested in {@link org.apache.hadoop.hdfs.TestQuota}.
  */
 public class TestDFSAdmin {
-  private static final Log LOG = LogFactory.getLog(TestDFSAdmin.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestDFSAdmin.class);
   private Configuration conf = null;
   private MiniDFSCluster cluster;
   private DFSAdmin admin;
@@ -243,6 +245,31 @@ public class TestDFSAdmin {
               containsString("Software version"),
               containsString("Config version"))));
     }
+  }
+
+  @Test(timeout = 30000)
+  public void testTriggerBlockReport() throws Exception {
+    redirectStream();
+    final DFSAdmin dfsAdmin = new DFSAdmin(conf);
+    final DataNode dn = cluster.getDataNodes().get(0);
+    final NameNode nn = cluster.getNameNode();
+
+    final String dnAddr = String.format(
+        "%s:%d",
+        dn.getXferAddress().getHostString(),
+        dn.getIpcPort());
+    final String nnAddr = nn.getHostAndPort();
+    resetStream();
+    final List<String> outs = Lists.newArrayList();
+    final int ret = ToolRunner.run(dfsAdmin,
+        new String[]{"-triggerBlockReport", dnAddr, "-incremental", "-namenode", nnAddr});
+    assertEquals(0, ret);
+
+    scanIntoList(out, outs);
+    assertEquals(1, outs.size());
+    assertThat(outs.get(0),
+        is(allOf(containsString("Triggering an incremental block report on "),
+            containsString(" to namenode "))));
   }
 
   @Test(timeout = 30000)
@@ -394,9 +421,11 @@ public class TestDFSAdmin {
     final List<String> outs = Lists.newArrayList();
     final List<String> errs = Lists.newArrayList();
     getReconfigurableProperties("namenode", address, outs, errs);
-    assertEquals(6, outs.size());
-    assertEquals(DFS_HEARTBEAT_INTERVAL_KEY, outs.get(1));
-    assertEquals(DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, outs.get(2));
+    assertEquals(12, outs.size());
+    assertEquals(DFS_BLOCK_PLACEMENT_EC_CLASSNAME_KEY, outs.get(1));
+    assertEquals(DFS_BLOCK_REPLICATOR_CLASSNAME_KEY, outs.get(2));
+    assertEquals(DFS_HEARTBEAT_INTERVAL_KEY, outs.get(3));
+    assertEquals(DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, outs.get(4));
     assertEquals(errs.size(), 0);
   }
 
@@ -518,7 +547,7 @@ public class TestDFSAdmin {
   }
 
   private static String scanIntoString(final ByteArrayOutputStream baos) {
-    final StrBuilder sb = new StrBuilder();
+    final TextStringBuilder sb = new TextStringBuilder();
     final Scanner scanner = new Scanner(baos.toString());
     while (scanner.hasNextLine()) {
       sb.appendln(scanner.nextLine());
@@ -579,7 +608,7 @@ public class TestDFSAdmin {
       // Verify report command for all counts to be zero
       resetStream();
       assertEquals(0, ToolRunner.run(dfsAdmin, new String[] {"-report"}));
-      verifyNodesAndCorruptBlocks(numDn, numDn, 0, 0, client);
+      verifyNodesAndCorruptBlocks(numDn, numDn, 0, 0, client, 0L, 0L);
 
       final short replFactor = 1;
       final long fileLength = 512L;
@@ -614,7 +643,7 @@ public class TestDFSAdmin {
       // Verify report command for all counts to be zero
       resetStream();
       assertEquals(0, ToolRunner.run(dfsAdmin, new String[] {"-report"}));
-      verifyNodesAndCorruptBlocks(numDn, numDn, 0, 0, client);
+      verifyNodesAndCorruptBlocks(numDn, numDn, 0, 0, client, 0L, 0L);
 
       // Choose a DataNode to shutdown
       final List<DataNode> datanodes = miniCluster.getDataNodes();
@@ -636,7 +665,7 @@ public class TestDFSAdmin {
 
       // Verify report command to show dead DataNode
       assertEquals(0, ToolRunner.run(dfsAdmin, new String[] {"-report"}));
-      verifyNodesAndCorruptBlocks(numDn, numDn - 1, 0, 0, client);
+      verifyNodesAndCorruptBlocks(numDn, numDn - 1, 0, 0, client, 0L, 1L);
 
       // Corrupt the replicated block
       final int blockFilesCorrupted = miniCluster
@@ -664,7 +693,7 @@ public class TestDFSAdmin {
       // verify report command for corrupt replicated block
       resetStream();
       assertEquals(0, ToolRunner.run(dfsAdmin, new String[] {"-report"}));
-      verifyNodesAndCorruptBlocks(numDn, numDn - 1, 1, 0, client);
+      verifyNodesAndCorruptBlocks(numDn, numDn - 1, 1, 0, client, 0L, 1L);
 
       lbs = miniCluster.getFileSystem().getClient().
           getNamenode().getBlockLocations(
@@ -689,7 +718,7 @@ public class TestDFSAdmin {
       // and EC block group
       resetStream();
       assertEquals(0, ToolRunner.run(dfsAdmin, new String[] {"-report"}));
-      verifyNodesAndCorruptBlocks(numDn, numDn - 1, 1, 1, client);
+      verifyNodesAndCorruptBlocks(numDn, numDn - 1, 1, 1, client, 0L, 0L);
     }
   }
 
@@ -834,7 +863,10 @@ public class TestDFSAdmin {
       final int numLiveDn,
       final int numCorruptBlocks,
       final int numCorruptECBlockGroups,
-      final DFSClient client) throws IOException {
+      final DFSClient client,
+      final Long highestPriorityLowRedundancyReplicatedBlocks,
+      final Long highestPriorityLowRedundancyECBlocks)
+      throws IOException {
 
     /* init vars */
     final String outStr = scanIntoString(out);
@@ -847,12 +879,23 @@ public class TestDFSAdmin {
     final String expectedCorruptedECBlockGroupsStr = String.format(
         "Block groups with corrupt internal blocks: %d",
         numCorruptECBlockGroups);
+    final String highestPriorityLowRedundancyReplicatedBlocksStr
+        = String.format(
+        "\tLow redundancy blocks with highest priority " +
+            "to recover: %d",
+        highestPriorityLowRedundancyReplicatedBlocks);
+    final String highestPriorityLowRedundancyECBlocksStr = String.format(
+        "\tLow redundancy blocks with highest priority " +
+            "to recover: %d",
+        highestPriorityLowRedundancyReplicatedBlocks);
 
     // verify nodes and corrupt blocks
     assertThat(outStr, is(allOf(
         containsString(expectedLiveNodesStr),
         containsString(expectedCorruptedBlocksStr),
-        containsString(expectedCorruptedECBlockGroupsStr))));
+        containsString(expectedCorruptedECBlockGroupsStr),
+        containsString(highestPriorityLowRedundancyReplicatedBlocksStr),
+        containsString(highestPriorityLowRedundancyECBlocksStr))));
 
     assertEquals(
         numDn,
@@ -867,8 +910,12 @@ public class TestDFSAdmin {
         client.getCorruptBlocksCount());
     assertEquals(numCorruptBlocks, client.getNamenode()
         .getReplicatedBlockStats().getCorruptBlocks());
+    assertEquals(highestPriorityLowRedundancyReplicatedBlocks, client.getNamenode()
+        .getReplicatedBlockStats().getHighestPriorityLowRedundancyBlocks());
     assertEquals(numCorruptECBlockGroups, client.getNamenode()
         .getECBlockGroupStats().getCorruptBlockGroups());
+    assertEquals(highestPriorityLowRedundancyECBlocks, client.getNamenode()
+        .getECBlockGroupStats().getHighestPriorityLowRedundancyBlocks());
   }
 
   @Test

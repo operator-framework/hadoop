@@ -18,13 +18,19 @@
 
 package org.apache.hadoop.yarn.service.impl.pb.service;
 
-import com.google.protobuf.RpcController;
-import com.google.protobuf.ServiceException;
+import org.apache.hadoop.thirdparty.protobuf.RpcController;
+import org.apache.hadoop.thirdparty.protobuf.ServiceException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.CancelUpgradeRequestProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.CancelUpgradeResponseProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.CompInstancesUpgradeRequestProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.CompInstancesUpgradeResponseProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.DecommissionCompInstancesRequestProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.DecommissionCompInstancesResponseProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.FlexComponentsRequestProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.FlexComponentsResponseProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.GetCompInstancesRequestProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.GetCompInstancesResponseProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.GetStatusRequestProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.GetStatusResponseProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.RestartServiceRequestProto;
@@ -99,6 +105,39 @@ public class ClientAMProtocolPBServiceImpl implements ClientAMProtocolPB {
       CompInstancesUpgradeRequestProto request) throws ServiceException {
     try {
       return real.upgrade(request);
+    } catch (IOException | YarnException e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  @Override
+  public GetCompInstancesResponseProto getCompInstances(
+      RpcController controller, GetCompInstancesRequestProto request)
+      throws ServiceException {
+    try {
+      return real.getCompInstances(request);
+    } catch (IOException | YarnException e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  @Override
+  public CancelUpgradeResponseProto cancelUpgrade(
+      RpcController controller, CancelUpgradeRequestProto request)
+      throws ServiceException {
+    try {
+      return real.cancelUpgrade(request);
+    } catch (IOException | YarnException e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  @Override
+  public DecommissionCompInstancesResponseProto decommissionCompInstances(
+      RpcController controller, DecommissionCompInstancesRequestProto
+      request) throws ServiceException {
+    try {
+      return real.decommissionCompInstances(request);
     } catch (IOException | YarnException e) {
       throw new ServiceException(e);
     }

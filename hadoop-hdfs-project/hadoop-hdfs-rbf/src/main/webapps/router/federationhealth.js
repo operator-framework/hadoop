@@ -33,10 +33,9 @@
 
   function load_overview() {
     var BEANS = [
-      {"name": "federation",  "url": "/jmx?qry=Hadoop:service=Router,name=FederationState"},
-      {"name": "routerstat",  "url": "/jmx?qry=Hadoop:service=NameNode,name=NameNodeStatus"},
-      {"name": "router",      "url": "/jmx?qrt=Hadoop:service=NameNode,name=NameNodeInfo"},
-      {"name": "mem",         "url": "/jmx?qry=java.lang:type=Memory"}
+      {"name": "federation",  "url": "jmx?qry=Hadoop:service=Router,name=FederationState"},
+      {"name": "router",  "url": "jmx?qry=Hadoop:service=Router,name=Router"},
+      {"name": "mem",         "url": "jmx?qry=java.lang:type=Memory"}
     ];
 
     var HELPERS = {
@@ -73,6 +72,21 @@
       guard_with_startup_progress(function(d) {
         for (var k in d) {
           data[k] = k === 'federation' ? workaround(d[k].beans[0]) : d[k].beans[0];
+          if (k === 'router') {
+            var routerInfo = d[k].beans[0];
+            data[k].selfState = "unavailable";
+            if (routerInfo.Safemode === true) {
+              data[k].selfState = "safemode";
+            } else if (routerInfo.RouterStatus === "INITIALIZING" || routerInfo.RouterStatus === "RUNNING") {
+              data[k].selfState = "active";
+            } else if (routerInfo.RouterStatus === "SAFEMODE") {
+              data[k].selfState = "safemode";
+            } else if (routerInfo.RouterStatus === "STOPPING") {
+              data[k].selfState = "standby";
+            } else if (routerInfo.RouterStatus === "UNAVAILABLE" || routerInfo.RouterStatus === "SHUTDOWN") {
+              data[k].selfState = "unavailable";
+            }
+          }
         }
         render();
       }),
@@ -124,6 +138,9 @@
           } else if (n.state === "ACTIVE") {
             n.title = capitalise(n.state);
             n.iconState = "active";
+          } else if (nodes[i].state === "OBSERVER") {
+            n.title = capitalise(n.state);
+            n.iconState = "observer";
           } else if (nodes[i].state === "STANDBY") {
             n.title = capitalise(n.state);
             n.iconState = "standby";
@@ -148,7 +165,7 @@
     }
 
     $.get(
-      '/jmx?qry=Hadoop:service=Router,name=FederationState',
+      'jmx?qry=Hadoop:service=Router,name=FederationState',
       guard_with_startup_progress(function (resp) {
         var data = workaround(resp.beans[0]);
         var base = dust.makeBase(HELPERS);
@@ -156,7 +173,7 @@
           $('#tab-namenode').html(out);
           $('#ui-tabs a[href="#tab-namenode"]').tab('show');
         });
-      })).error(ajax_error_handler);
+      })).fail(ajax_error_handler);
   }
 
   function load_router_info() {
@@ -212,7 +229,7 @@
     }
 
     $.get(
-      '/jmx?qry=Hadoop:service=Router,name=FederationState',
+      'jmx?qry=Hadoop:service=Router,name=FederationState',
       guard_with_startup_progress(function (resp) {
         var data = workaround(resp.beans[0]);
         var base = dust.makeBase(HELPERS);
@@ -220,7 +237,7 @@
           $('#tab-router').html(out);
           $('#ui-tabs a[href="#tab-router"]').tab('show');
         });
-      })).error(ajax_error_handler);
+      })).fail(ajax_error_handler);
   }
 
   // TODO Copied directly from dfshealth.js; is there a way to import this function?
@@ -290,7 +307,7 @@
     }
 
     $.get(
-      '/jmx?qry=Hadoop:service=NameNode,name=NameNodeInfo',
+      'jmx?qry=Hadoop:service=NameNode,name=NameNodeInfo',
       guard_with_startup_progress(function (resp) {
         var data = workaround(resp.beans[0]);
         var base = dust.makeBase(HELPERS);
@@ -306,7 +323,7 @@
             ]});
           $('#ui-tabs a[href="#tab-datanode"]').tab('show');
         });
-      })).error(ajax_error_handler);
+      })).fail(ajax_error_handler);
   }
 
   function load_mount_table() {
@@ -316,20 +333,34 @@
       function augment_read_only(mountTable) {
         for (var i = 0, e = mountTable.length; i < e; ++i) {
           if (mountTable[i].readonly == true) {
-            mountTable[i].readonly = "true"
+            mountTable[i].readonly = "readonly"
+            mountTable[i].status = "Read Only"
           } else {
-            mountTable[i].readonly = "false"
+            mountTable[i].readonly = "readwrite"
+            mountTable[i].status = "Read Write"
+          }
+        }
+      }
+
+      function augment_fault_tolerant(mountTable) {
+        for (var i = 0, e = mountTable.length; i < e; ++i) {
+          if (mountTable[i].faulttolerant == true) {
+            mountTable[i].faulttolerant = "true"
+            mountTable[i].ftStatus = "Fault tolerant"
+          } else {
+            mountTable[i].faulttolerant = "false"
           }
         }
       }
 
       resource.MountTable = JSON.parse(resource.MountTable)
       augment_read_only(resource.MountTable)
+      augment_fault_tolerant(resource.MountTable)
       return resource;
     }
 
     $.get(
-      '/jmx?qry=Hadoop:service=Router,name=FederationState',
+      'jmx?qry=Hadoop:service=Router,name=FederationState',
       guard_with_startup_progress(function (resp) {
         var data = workaround(resp.beans[0]);
         var base = dust.makeBase(HELPERS);
@@ -337,7 +368,7 @@
           $('#tab-mounttable').html(out);
           $('#ui-tabs a[href="#tab-mounttable"]').tab('show');
         });
-      })).error(ajax_error_handler);
+      })).fail(ajax_error_handler);
   }
 
   function toTitleCase(str) {

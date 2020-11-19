@@ -50,7 +50,10 @@ export default Ember.Controller.extend({
           this.send("refresh");
         }, 5000);
       }, function (errr) {
-        let messg = errr.diagnostics || 'Error: Stop service failed!';
+        let messg = 'Error: Stop service failed!';
+        if (errr.errors && errr.errors[0] && errr.errors[0].diagnostics) {
+          messg = 'Error: ' + errr.errors[0].diagnostics;
+        }
         self.set('actionResponse', { msg: messg, type: 'error' });
       }).finally(function () {
         self.set('isLoading', false);
@@ -74,7 +77,10 @@ export default Ember.Controller.extend({
           this.transitionToRoute("yarn-services");
         }, 5000);
       }, function (errr) {
-        let messg = errr.diagnostics || 'Error: Delete service failed!';
+        let messg = 'Error: Delete service failed!';
+        if (errr.errors && errr.errors[0] && errr.errors[0].diagnostics) {
+          messg = 'Error: ' + errr.errors[0].diagnostics;
+        }
         self.set('actionResponse', { msg: messg, type: 'error' });
       }).finally(function () {
         self.set('isLoading', false);
@@ -154,11 +160,29 @@ export default Ember.Controller.extend({
     return amHostAddress;
   }),
 
-  isKillable: Ember.computed("model.app.state", function () {
+  isAppKillable: Ember.computed("model.app.state", function () {
     if (this.get("model.app.applicationType") === 'yarn-service') {
       return false;
     }
     const killableStates = ['NEW', 'NEW_SAVING', 'SUBMITTED', 'ACCEPTED', 'RUNNING'];
     return killableStates.indexOf(this.get("model.app.state")) > -1;
+  }),
+
+  isServiceDeployedOrRunning: Ember.computed('model.serviceInfo', function() {
+    const serviceInfo = this.get('model.serviceInfo');
+    const stoppedStates = ['STOPPED', 'SUCCEEDED', 'FAILED'];
+    if (serviceInfo) {
+      return stoppedStates.indexOf(serviceInfo.get('state')) === -1;
+    }
+    return false;
+  }),
+
+  isServiceStoppped: Ember.computed('model.serviceInfo', function() {
+    const serviceInfo = this.get('model.serviceInfo');
+    const stoppedStates = ['STOPPED', 'SUCCEEDED'];
+    if (serviceInfo) {
+      return stoppedStates.indexOf(serviceInfo.get('state')) > -1;
+    }
+    return false;
   })
 });

@@ -19,8 +19,10 @@ package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity
     .queuemanagement;
 
 import com.google.common.annotations.VisibleForTesting;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity
+    .QueueManagementDynamicEditPolicy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler
     .SchedulerDynamicEditException;
@@ -81,8 +83,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
   private CapacitySchedulerContext scheduler;
   private ManagedParentQueue managedParentQueue;
 
-  private static final Log LOG = LogFactory.getLog(
-      GuaranteedOrZeroCapacityOverTimePolicy.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(GuaranteedOrZeroCapacityOverTimePolicy.class);
 
   private ReentrantReadWriteLock.WriteLock writeLock;
 
@@ -120,13 +122,13 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
       return false;
     }
 
-    private boolean addLeafQueueStateIfNotExists(String leafQueueName,
+    private boolean addLeafQueueStateIfNotExists(String leafQueuePath,
         String partition, LeafQueueStatePerPartition leafQueueState) {
       if (!containsPartition(partition)) {
         leafQueueStateMap.put(partition, new HashMap<>());
       }
-      if (!containsLeafQueue(leafQueueName, partition)) {
-        leafQueueStateMap.get(partition).put(leafQueueName, leafQueueState);
+      if (!containsLeafQueue(leafQueuePath, partition)) {
+        leafQueueStateMap.get(partition).put(leafQueuePath, leafQueueState);
         return true;
       }
       return false;
@@ -134,14 +136,14 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
 
     public boolean createLeafQueueStateIfNotExists(LeafQueue leafQueue,
         String partition) {
-      return addLeafQueueStateIfNotExists(leafQueue.getQueueName(), partition,
+      return addLeafQueueStateIfNotExists(leafQueue.getQueuePath(), partition,
           new LeafQueueStatePerPartition());
     }
 
     public LeafQueueStatePerPartition getLeafQueueStatePerPartition(
-        String leafQueueName, String partition) {
+        String leafQueuePath, String partition) {
       if (leafQueueStateMap.get(partition) != null) {
-        return leafQueueStateMap.get(partition).get(leafQueueName);
+        return leafQueueStateMap.get(partition).get(leafQueuePath);
       }
       return null;
     }
@@ -200,8 +202,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
         new HashMap<String, Float>();
 
     private float getAbsoluteActivatedChildQueueCapacity(String nodeLabel) {
+      readLock.lock();
       try {
-        readLock.lock();
         Float totalActivatedCapacity = getAbsActivatedChildQueueCapacityByLabel(
             nodeLabel);
         if (totalActivatedCapacity != null) {
@@ -216,8 +218,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
 
     private void incAbsoluteActivatedChildCapacity(String nodeLabel,
         float childQueueCapacity) {
+      writeLock.lock();
       try {
-        writeLock.lock();
         Float activatedChildCapacity = getAbsActivatedChildQueueCapacityByLabel(
             nodeLabel);
         if (activatedChildCapacity != null) {
@@ -234,8 +236,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
 
     private void decAbsoluteActivatedChildCapacity(String nodeLabel,
         float childQueueCapacity) {
+      writeLock.lock();
       try {
-        writeLock.lock();
         Float activatedChildCapacity = getAbsActivatedChildQueueCapacityByLabel(
             nodeLabel);
         if (activatedChildCapacity != null) {
@@ -309,7 +311,7 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
 
     LOG.info(
         "Initialized queue management policy for parent queue " + parentQueue
-            .getQueueName() + " with leaf queue template capacities : ["
+            .getQueuePath() + " with leaf queue template capacities : ["
             + leafQueueTemplate.getQueueCapacities() + "]");
   }
 
@@ -326,10 +328,10 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
       if (!parentQueueLabels.contains(nodeLabel)) {
         LOG.error("Invalid node label " + nodeLabel
             + " on configured leaf template on parent" + " queue " + parentQueue
-            .getQueueName());
+            .getQueuePath());
         throw new IOException("Invalid node label " + nodeLabel
             + " on configured leaf template on parent" + " queue " + parentQueue
-            .getQueueName());
+            .getQueuePath());
       }
     }
 
@@ -358,8 +360,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
     //synch/add missing leaf queue(s) if any to state
     updateLeafQueueState();
 
+    readLock.lock();
     try {
-      readLock.lock();
       List<QueueManagementChange> queueManagementChanges = new ArrayList<>();
       List<FiCaSchedulerApp> pendingApps = getSortedPendingApplications();
 
@@ -380,6 +382,17 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
             deactivateLeafQueuesIfInActive(managedParentQueue, nodeLabel,
                 leafQueueEntitlements);
 
+        if (LOG.isDebugEnabled()) {
+          if ( deactivatedLeafQueues.size() > 0) {
+              LOG.debug("Parent queue = {},  " +
+                   ", nodeLabel = {}, deactivated leaf queues = [{}] ",
+                  managedParentQueue.getQueuePath(), nodeLabel,
+                  deactivatedLeafQueues.size() > 25 ? deactivatedLeafQueues
+                      .size() : deactivatedLeafQueues);
+
+          }
+        }
+
         float deactivatedCapacity = getTotalDeactivatedCapacity(
             deactivatedLeafQueues, nodeLabel);
 
@@ -392,7 +405,7 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
                 + deactivatedCapacity + EPSILON;
 
         if (LOG.isDebugEnabled()) {
-          LOG.debug("Parent queue : " + managedParentQueue.getQueueName()
+          LOG.debug("Parent queue = " + managedParentQueue.getQueuePath()
               + ", nodeLabel = " + nodeLabel + ", absCapacity = "
               + parentAbsoluteCapacity + ", leafQueueAbsoluteCapacity = "
               + leafQueueTemplateAbsoluteCapacity + ", deactivatedCapacity = "
@@ -409,7 +422,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
                 pendingApps.size());
 
             if (LOG.isDebugEnabled()) {
-              LOG.debug("Found " + maxLeafQueuesTobeActivated + " leaf queues"
+              LOG.debug("Parent queue = " + managedParentQueue.getQueuePath()
+                  +  " : Found " + maxLeafQueuesTobeActivated + " leaf queues"
                   + " to be activated with " + pendingApps.size() + " apps ");
             }
 
@@ -424,8 +438,9 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
 
             if (LOG.isDebugEnabled()) {
               if (leafQueuesToBeActivated.size() > 0) {
-                LOG.debug("Activated leaf queues : [" + leafQueuesToBeActivated
-                    + "]");
+                LOG.debug("Activated leaf queues : [{}]",
+                    leafQueuesToBeActivated.size() < 25 ?
+                    leafQueuesToBeActivated : leafQueuesToBeActivated.size());
               }
             }
           }
@@ -468,8 +483,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
 
   @VisibleForTesting
   void updateLeafQueueState() {
+    writeLock.lock();
     try {
-      writeLock.lock();
       Set<String> newPartitions = new HashSet<>();
       Set<String> newQueues = new HashSet<>();
 
@@ -480,7 +495,7 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
                 nodeLabel);
             newPartitions.add(nodeLabel);
           }
-          newQueues.add(newQueue.getQueueName());
+          newQueues.add(newQueue.getQueuePath());
         }
       }
 
@@ -492,8 +507,9 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
         String partition = e.getKey();
         if (!newPartitions.contains(partition)) {
           itr.remove();
-          LOG.info(
-              "Removed partition " + partition + " from leaf queue " + "state");
+          LOG.info(managedParentQueue.getQueuePath()  +
+              " : Removed partition " + partition + " from leaf queue " +
+              "state");
         } else{
           Map<String, LeafQueueStatePerPartition> queues = e.getValue();
           for (
@@ -502,7 +518,9 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
             String queue = queueItr.next().getKey();
             if (!newQueues.contains(queue)) {
               queueItr.remove();
-              LOG.info("Removed queue " + queue + " from leaf queue "
+              LOG.info(managedParentQueue.getQueuePath() + " : Removed queue"
+                  + queue + " from "
+                  + "leaf queue "
                   + "state from partition " + partition);
             }
           }
@@ -522,7 +540,7 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
     for (FiCaSchedulerApp app : pendingApps) {
       AutoCreatedLeafQueue leafQueue =
           (AutoCreatedLeafQueue) app.getCSLeafQueue();
-      String leafQueueName = leafQueue.getQueueName();
+      String leafQueueName = leafQueue.getQueuePath();
 
       //Check if leafQueue is not active already and has any pending apps
       if (ctr < leafQueuesNeeded) {
@@ -552,8 +570,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
   @VisibleForTesting
   public boolean isActive(final AutoCreatedLeafQueue leafQueue,
       String nodeLabel) throws SchedulerDynamicEditException {
+    readLock.lock();
     try {
-      readLock.lock();
       LeafQueueStatePerPartition leafQueueStatus = getLeafQueueState(leafQueue,
           nodeLabel);
       return leafQueueStatus.isActive();
@@ -572,22 +590,16 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
       AutoCreatedLeafQueue leafQueue = (AutoCreatedLeafQueue) childQueue;
       if (leafQueue != null) {
         if (isActive(leafQueue, nodeLabel) && !hasPendingApps(leafQueue)) {
-          if (!leafQueueEntitlements.containsKey(leafQueue.getQueueName())) {
-            leafQueueEntitlements.put(leafQueue.getQueueName(),
+          if (!leafQueueEntitlements.containsKey(leafQueue.getQueuePath())) {
+            leafQueueEntitlements.put(leafQueue.getQueuePath(),
                 new QueueCapacities(false));
           }
 
           QueueCapacities capacities = leafQueueEntitlements.get(
-              leafQueue.getQueueName());
+              leafQueue.getQueuePath());
           updateToZeroCapacity(capacities, nodeLabel);
-          deactivatedQueues.put(leafQueue.getQueueName(),
+          deactivatedQueues.put(leafQueue.getQueuePath(),
               leafQueueTemplateCapacities);
-        } else{
-          if (LOG.isDebugEnabled()) {
-            LOG.debug(" Leaf queue has pending applications or is " + "inactive"
-                + " : " + leafQueue.getNumApplications()
-                + ".Skipping deactivation for " + leafQueue);
-          }
         }
       } else{
         LOG.warn("Could not find queue in scheduler while trying" + " to "
@@ -637,8 +649,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
   public void commitQueueManagementChanges(
       List<QueueManagementChange> queueManagementChanges)
       throws SchedulerDynamicEditException {
+    writeLock.lock();
     try {
-      writeLock.lock();
       for (QueueManagementChange queueManagementChange :
           queueManagementChanges) {
         AutoCreatedLeafQueueConfig updatedQueueTemplate =
@@ -657,19 +669,15 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
           if (updatedQueueTemplate.getQueueCapacities().
               getCapacity(nodeLabel) > 0) {
             if (isActive(leafQueue, nodeLabel)) {
-              if (LOG.isDebugEnabled()) {
-                LOG.debug("Queue is already active." + " Skipping activation : "
-                    + queue.getQueuePath());
-              }
+              LOG.debug("Queue is already active. Skipping activation : {}",
+                  leafQueue.getQueuePath());
             } else{
               activate(leafQueue, nodeLabel);
             }
           } else{
             if (!isActive(leafQueue, nodeLabel)) {
-              if (LOG.isDebugEnabled()) {
-                LOG.debug("Queue is already de-activated. Skipping "
-                    + "de-activation : " + leafQueue.getQueuePath());
-              }
+              LOG.debug("Queue is already de-activated. Skipping "
+                  + "de-activation : {}", leafQueue.getQueuePath());
             } else{
               deactivate(leafQueue, nodeLabel);
             }
@@ -683,8 +691,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
 
   private void activate(final AbstractAutoCreatedLeafQueue leafQueue,
       String nodeLabel) throws SchedulerDynamicEditException {
+    writeLock.lock();
     try {
-      writeLock.lock();
       getLeafQueueState(leafQueue, nodeLabel).activate();
       parentQueueState.incAbsoluteActivatedChildCapacity(nodeLabel,
           leafQueueTemplateCapacities.getAbsoluteCapacity(nodeLabel));
@@ -695,8 +703,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
 
   private void deactivate(final AbstractAutoCreatedLeafQueue leafQueue,
       String nodeLabel) throws SchedulerDynamicEditException {
+    writeLock.lock();
     try {
-      writeLock.lock();
       getLeafQueueState(leafQueue, nodeLabel).deactivate();
 
       parentQueueState.decAbsoluteActivatedChildCapacity(nodeLabel,
@@ -736,7 +744,7 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
 
     LOG.info(
         "Reinitialized queue management policy for parent queue " + parentQueue
-            .getQueueName() + " with leaf queue template " + "capacities : ["
+            .getQueuePath() + " with leaf queue template " + "capacities : ["
             + leafQueueTemplate.getQueueCapacities() + "]");
   }
 
@@ -753,9 +761,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
               .getClass());
     }
 
+    writeLock.lock();
     try {
-      writeLock.lock();
-
       QueueCapacities capacities = new QueueCapacities(false);
       for (String nodeLabel : leafQueueTemplateNodeLabels) {
         if (!leafQueueState.createLeafQueueStateIfNotExists(leafQueue,
@@ -804,15 +811,15 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
   @VisibleForTesting
   LeafQueueStatePerPartition getLeafQueueState(LeafQueue queue,
       String partition) throws SchedulerDynamicEditException {
+    readLock.lock();
     try {
-      readLock.lock();
-      String queueName = queue.getQueueName();
-      if (!leafQueueState.containsLeafQueue(queueName, partition)) {
+      String queuePath = queue.getQueuePath();
+      if (!leafQueueState.containsLeafQueue(queuePath, partition)) {
         throw new SchedulerDynamicEditException(
-            "Could not find leaf queue in " + "state " + queueName);
+            "Could not find leaf queue in " + "state " + queuePath);
       } else{
         return leafQueueState.
-            getLeafQueueStatePerPartition(queueName, partition);
+            getLeafQueueStatePerPartition(queuePath, partition);
       }
     } finally {
       readLock.unlock();

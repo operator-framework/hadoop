@@ -117,16 +117,15 @@ public abstract class DockerCommand {
    * @param dockerCommand Specific command to be run by docker.
    * @param containerName
    * @param env
-   * @param conf
    * @param nmContext
    * @return Returns the PrivilegedOperation object to be used.
    * @throws ContainerExecutionException
    */
   public PrivilegedOperation preparePrivilegedOperation(
       DockerCommand dockerCommand, String containerName, Map<String,
-      String> env, Configuration conf, Context nmContext)
+      String> env, Context nmContext)
       throws ContainerExecutionException {
-    DockerClient dockerClient = new DockerClient(conf);
+    DockerClient dockerClient = new DockerClient();
     String commandFile =
         dockerClient.writeCommandToTempFile(dockerCommand,
         ContainerId.fromString(containerName),

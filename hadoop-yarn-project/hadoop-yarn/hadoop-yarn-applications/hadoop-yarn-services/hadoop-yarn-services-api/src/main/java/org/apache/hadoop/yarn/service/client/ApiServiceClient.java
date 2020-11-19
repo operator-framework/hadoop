@@ -20,24 +20,32 @@ import static org.apache.hadoop.yarn.service.utils.ServiceApiUtil.jsonSerDeser;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.text.MessageFormat;
 import java.util.List;
 import java.util.Map;
+import java.security.PrivilegedExceptionAction;
 
+import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.UriBuilder;
 
 import com.google.common.base.Preconditions;
-import org.apache.commons.lang.StringUtils;
+
+import org.apache.commons.codec.binary.Base64;
+import com.google.common.base.Strings;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
 import org.apache.hadoop.yarn.client.api.AppAdminClient;
 import org.apache.hadoop.yarn.client.api.YarnClient;
+import org.apache.hadoop.yarn.client.util.YarnClientUtils;
+import org.apache.hadoop.yarn.conf.HAUtil;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.service.api.records.Component;
@@ -48,7 +56,6 @@ import org.apache.hadoop.yarn.service.api.records.Service;
 import org.apache.hadoop.yarn.service.api.records.ServiceState;
 import org.apache.hadoop.yarn.service.api.records.ServiceStatus;
 import org.apache.hadoop.yarn.service.conf.RestApiConstants;
-import org.apache.hadoop.yarn.service.utils.JsonSerDeser;
 import org.apache.hadoop.yarn.service.utils.ServiceApiUtil;
 import org.apache.hadoop.yarn.util.RMHAUtils;
 import org.codehaus.jackson.map.PropertyNamingStrategy;
@@ -58,7 +65,6 @@ import org.slf4j.LoggerFactory;
 
 import com.sun.jersey.api.client.Client;
 import com.sun.jersey.api.client.ClientResponse;
-import com.sun.jersey.api.client.WebResource;
 import com.sun.jersey.api.client.WebResource.Builder;
 import com.sun.jersey.api.client.config.ClientConfig;
 import com.sun.jersey.api.client.config.DefaultClientConfig;
@@ -71,7 +77,15 @@ import static org.apache.hadoop.yarn.service.exceptions.LauncherExitCodes.*;
 public class ApiServiceClient extends AppAdminClient {
   private static final Logger LOG =
       LoggerFactory.getLogger(ApiServiceClient.class);
+  private static final Base64 BASE_64_CODEC = new Base64(0);
   protected YarnClient yarnClient;
+
+  public ApiServiceClient() {
+  }
+
+  public ApiServiceClient(Configuration c) throws Exception {
+    serviceInit(c);
+  }
 
   @Override protected void serviceInit(Configuration configuration)
       throws Exception {
@@ -83,7 +97,7 @@ public class ApiServiceClient extends AppAdminClient {
   /**
    * Calculate Resource Manager address base on working REST API.
    */
-  private String getRMWebAddress() {
+  String getRMWebAddress() throws IOException {
     Configuration conf = getConfig();
     String scheme = "http://";
     String path = "/app/v1/services/version";
@@ -94,41 +108,57 @@ public class ApiServiceClient extends AppAdminClient {
       rmAddress = conf
           .get("yarn.resourcemanager.webapp.https.address");
     }
-    boolean useKerberos = UserGroupInformation.isSecurityEnabled();
-    List<String> rmServers = RMHAUtils
-        .getRMHAWebappAddresses(new YarnConfiguration(conf));
-    for (String host : rmServers) {
-      try {
-        Client client = Client.create();
-        StringBuilder sb = new StringBuilder();
-        sb.append(scheme);
-        sb.append(host);
-        sb.append(path);
-        if (!useKerberos) {
-          try {
-            String username = UserGroupInformation.getCurrentUser().getShortUserName();
-            sb.append("?user.name=");
-            sb.append(username);
-          } catch (IOException e) {
-            LOG.debug("Fail to resolve username: {}", e);
+
+    if (HAUtil.isHAEnabled(conf)) {
+      boolean useKerberos = UserGroupInformation.isSecurityEnabled();
+      List<String> rmServers = getRMHAWebAddresses(conf);
+      StringBuilder diagnosticsMsg = new StringBuilder();
+      for (String host : rmServers) {
+        try {
+          Client client = Client.create();
+          client.setFollowRedirects(false);
+          StringBuilder sb = new StringBuilder();
+          sb.append(scheme)
+              .append(host)
+              .append(path);
+          if (!useKerberos) {
+            try {
+              String username = UserGroupInformation.getCurrentUser()
+                  .getShortUserName();
+              sb.append("?user.name=")
+                  .append(username);
+            } catch (IOException e) {
+              LOG.debug("Fail to resolve username: {}", e);
+            }
           }
+          Builder builder = client
+              .resource(sb.toString()).type(MediaType.APPLICATION_JSON);
+          if (useKerberos) {
+            String[] server = host.split(":");
+            String challenge = YarnClientUtils.generateToken(server[0]);
+            builder.header(HttpHeaders.AUTHORIZATION, "Negotiate " +
+                challenge);
+            LOG.debug("Authorization: Negotiate {}", challenge);
+          }
+          ClientResponse test = builder.get(ClientResponse.class);
+          if (test.getStatus() == 200) {
+            return scheme + host;
+          }
+        } catch (Exception e) {
+          LOG.info("Fail to connect to: " + host);
+          LOG.debug("Root cause: ", e);
+          diagnosticsMsg.append("Error connecting to " + host
+              + " due to " + e.getMessage() + "\n");
         }
-        WebResource webResource = client
-            .resource(sb.toString());
-        if (useKerberos) {
-          AuthenticatedURL.Token token = new AuthenticatedURL.Token();
-          webResource.header("WWW-Authenticate", token);
-        }
-        ClientResponse test = webResource.get(ClientResponse.class);
-        if (test.getStatus() == 200) {
-          rmAddress = host;
-          break;
-        }
-      } catch (Exception e) {
-        LOG.debug("Fail to connect to: "+host, e);
       }
+      throw new IOException(diagnosticsMsg.toString());
     }
     return scheme+rmAddress;
+  }
+
+  List<String> getRMHAWebAddresses(Configuration conf) {
+    return RMHAUtils
+        .getRMHAWebappAddresses(new YarnConfiguration(conf));
   }
 
   /**
@@ -138,20 +168,16 @@ public class ApiServiceClient extends AppAdminClient {
    * @return URI to API Service
    * @throws IOException
    */
-  private String getServicePath(String appName) throws IOException {
+  public String getServicePath(String appName) throws IOException {
     String url = getRMWebAddress();
     StringBuilder api = new StringBuilder();
-    api.append(url);
-    api.append("/app/v1/services");
+    api.append(url)
+        .append("/app/v1/services");
     if (appName != null) {
-      api.append("/");
-      api.append(appName);
+      api.append("/")
+          .append(appName);
     }
-    Configuration conf = getConfig();
-    if (conf.get("hadoop.http.authentication.type").equalsIgnoreCase("simple")) {
-      api.append("?user.name=" + UrlEncoded
-          .encodeString(System.getProperty("user.name")));
-    }
+    appendUserNameIfRequired(api);
     return api.toString();
   }
 
@@ -159,35 +185,54 @@ public class ApiServiceClient extends AppAdminClient {
     Preconditions.checkNotNull(appName);
     String url = getRMWebAddress();
     StringBuilder api = new StringBuilder();
-    api.append(url);
-    api.append("/app/v1/services/").append(appName).append("/")
+    api.append(url)
+        .append("/app/v1/services/").append(appName).append("/")
         .append(RestApiConstants.COMP_INSTANCES);
-    Configuration conf = getConfig();
-    if (conf.get("hadoop.http.authentication.type").equalsIgnoreCase(
-        "simple")) {
-      api.append("?user.name=" + UrlEncoded
-          .encodeString(System.getProperty("user.name")));
-    }
+    appendUserNameIfRequired(api);
     return api.toString();
+  }
+
+  private String getInstancePath(String appName, List<String> components,
+      String version, List<String> containerStates) throws IOException {
+    UriBuilder builder = UriBuilder.fromUri(getInstancesPath(appName));
+    if (components != null && !components.isEmpty()) {
+      components.forEach(compName ->
+        builder.queryParam(RestApiConstants.PARAM_COMP_NAME, compName));
+    }
+    if (!Strings.isNullOrEmpty(version)){
+      builder.queryParam(RestApiConstants.PARAM_VERSION, version);
+    }
+    if (containerStates != null && !containerStates.isEmpty()){
+      containerStates.forEach(state ->
+          builder.queryParam(RestApiConstants.PARAM_CONTAINER_STATE, state));
+    }
+    return builder.build().toString();
   }
 
   private String getComponentsPath(String appName) throws IOException {
     Preconditions.checkNotNull(appName);
     String url = getRMWebAddress();
     StringBuilder api = new StringBuilder();
-    api.append(url);
-    api.append("/app/v1/services/").append(appName).append("/")
+    api.append(url)
+        .append("/app/v1/services/").append(appName).append("/")
         .append(RestApiConstants.COMPONENTS);
-    Configuration conf = getConfig();
-    if (conf.get("hadoop.http.authentication.type").equalsIgnoreCase(
-        "simple")) {
-      api.append("?user.name=" + UrlEncoded
-          .encodeString(System.getProperty("user.name")));
-    }
+    appendUserNameIfRequired(api);
     return api.toString();
   }
 
-  private Builder getApiClient() throws IOException {
+  private void appendUserNameIfRequired(StringBuilder builder)
+      throws IOException {
+    Configuration conf = getConfig();
+    if (conf.get("hadoop.http.authentication.type")
+        .equalsIgnoreCase("simple")) {
+      String username = UserGroupInformation.getCurrentUser()
+            .getShortUserName();
+      builder.append("?user.name=").append(UrlEncoded
+          .encodeString(username));
+    }
+  }
+
+  public Builder getApiClient() throws IOException {
     return getApiClient(getServicePath(null));
   }
 
@@ -198,16 +243,20 @@ public class ApiServiceClient extends AppAdminClient {
    * @return
    * @throws IOException
    */
-  private Builder getApiClient(String requestPath)
+  public Builder getApiClient(String requestPath)
       throws IOException {
     Client client = Client.create(getClientConfig());
-    Configuration conf = getConfig();
     client.setChunkedEncodingSize(null);
     Builder builder = client
         .resource(requestPath).type(MediaType.APPLICATION_JSON);
-    if (conf.get("hadoop.http.authentication.type").equals("kerberos")) {
-      AuthenticatedURL.Token token = new AuthenticatedURL.Token();
-      builder.header("WWW-Authenticate", token);
+    if (UserGroupInformation.isSecurityEnabled()) {
+      try {
+        URI url = new URI(requestPath);
+        String challenge = YarnClientUtils.generateToken(url.getHost());
+        builder.header(HttpHeaders.AUTHORIZATION, "Negotiate " + challenge);
+      } catch (Exception e) {
+        throw new IOException(e);
+      }
     }
     return builder
         .accept("application/json;charset=utf-8");
@@ -498,16 +547,16 @@ public class ApiServiceClient extends AppAdminClient {
           .get(ClientResponse.class);
       if (response.getStatus() == 404) {
         StringBuilder sb = new StringBuilder();
-        sb.append(" Service ");
-        sb.append(appName);
-        sb.append(" not found");
+        sb.append(" Service ")
+            .append(appName)
+            .append(" not found");
         return sb.toString();
       }
       if (response.getStatus() != 200) {
         StringBuilder sb = new StringBuilder();
-        sb.append(appName);
-        sb.append(" Failed : HTTP error code : ");
-        sb.append(response.getStatus());
+        sb.append(appName)
+            .append(" Failed : HTTP error code : ")
+            .append(response.getStatus());
         return sb.toString();
       }
       output = response.getEntity(String.class);
@@ -515,6 +564,26 @@ public class ApiServiceClient extends AppAdminClient {
       LOG.error("Fail to check application status: ", e);
     }
     return output;
+  }
+
+  @Override
+  public int actionUpgradeExpress(String appName, File path)
+      throws IOException, YarnException {
+    int result;
+    try {
+      Service service =
+          loadAppJsonFromLocalFS(path.getAbsolutePath(), appName, null, null);
+      service.setState(ServiceState.EXPRESS_UPGRADING);
+      String buffer = jsonSerDeser.toJson(service);
+      LOG.info("Upgrade in progress. Please wait..");
+      ClientResponse response = getApiClient(getServicePath(appName))
+          .put(ClientResponse.class, buffer);
+      result = processResponse(response);
+    } catch (Exception e) {
+      LOG.error("Failed to upgrade application: ", e);
+      result = EXIT_EXCEPTION_THROWN;
+    }
+    return result;
   }
 
   @Override
@@ -553,7 +622,7 @@ public class ApiServiceClient extends AppAdminClient {
         container.setState(ContainerState.UPGRADING);
         toUpgrade[idx++] = container;
       }
-      String buffer = CONTAINER_JSON_SERDE.toJson(toUpgrade);
+      String buffer = ServiceApiUtil.CONTAINER_JSON_SERDE.toJson(toUpgrade);
       ClientResponse response = getApiClient(getInstancesPath(appName))
           .put(ClientResponse.class, buffer);
       result = processResponse(response);
@@ -577,7 +646,7 @@ public class ApiServiceClient extends AppAdminClient {
         component.setState(ComponentState.UPGRADING);
         toUpgrade[idx++] = component;
       }
-      String buffer = COMP_JSON_SERDE.toJson(toUpgrade);
+      String buffer = ServiceApiUtil.COMP_JSON_SERDE.toJson(toUpgrade);
       ClientResponse response = getApiClient(getComponentsPath(appName))
           .put(ClientResponse.class, buffer);
       result = processResponse(response);
@@ -590,20 +659,95 @@ public class ApiServiceClient extends AppAdminClient {
 
   @Override
   public int actionCleanUp(String appName, String userName) throws
-      IOException, YarnException {
-    ServiceClient sc = new ServiceClient();
-    sc.init(getConfig());
-    sc.start();
-    int result = sc.actionCleanUp(appName, userName);
-    sc.close();
+      IOException, YarnException, InterruptedException {
+    UserGroupInformation proxyUser;
+    UserGroupInformation ugi;
+    if (UserGroupInformation.isSecurityEnabled()) {
+      proxyUser = UserGroupInformation.getLoginUser();
+      ugi = UserGroupInformation.createProxyUser(userName, proxyUser);
+    } else {
+      ugi = UserGroupInformation.createRemoteUser(userName);
+    }
+    return ugi.doAs((PrivilegedExceptionAction<Integer>) () -> {
+      ServiceClient sc = new ServiceClient();
+      try {
+        sc.init(getConfig());
+        sc.start();
+        int result = sc.actionCleanUp(appName, userName);
+        return result;
+      } finally {
+        sc.close();
+      }
+    });
+  }
+
+  @Override
+  public String getInstances(String appName, List<String> components,
+      String version, List<String> containerStates) throws IOException,
+      YarnException {
+    try {
+      String uri = getInstancePath(appName, components, version,
+          containerStates);
+      ClientResponse response = getApiClient(uri).get(ClientResponse.class);
+      if (response.getStatus() != 200) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Failed: HTTP error code: ")
+            .append(response.getStatus())
+            .append(" ErrorMsg: ").append(response.getEntity(String.class));
+        return sb.toString();
+      }
+      return response.getEntity(String.class);
+    } catch (Exception e) {
+      LOG.error("Fail to get containers {}", e);
+    }
+    return null;
+  }
+
+  @Override
+  public int actionCancelUpgrade(
+      String appName) throws IOException, YarnException {
+    int result;
+    try {
+      Service service = new Service();
+      service.setName(appName);
+      service.setState(ServiceState.CANCEL_UPGRADING);
+      String buffer = jsonSerDeser.toJson(service);
+      LOG.info("Cancel upgrade in progress. Please wait..");
+      ClientResponse response = getApiClient(getServicePath(appName))
+          .put(ClientResponse.class, buffer);
+      result = processResponse(response);
+    } catch (Exception e) {
+      LOG.error("Failed to cancel upgrade: ", e);
+      result = EXIT_EXCEPTION_THROWN;
+    }
     return result;
   }
 
-  private static final JsonSerDeser<Container[]> CONTAINER_JSON_SERDE =
-      new JsonSerDeser<>(Container[].class,
-          PropertyNamingStrategy.CAMEL_CASE_TO_LOWER_CASE_WITH_UNDERSCORES);
-
-  private static final JsonSerDeser<Component[]> COMP_JSON_SERDE =
-      new JsonSerDeser<>(Component[].class,
-          PropertyNamingStrategy.CAMEL_CASE_TO_LOWER_CASE_WITH_UNDERSCORES);
+  @Override
+  public int actionDecommissionInstances(String appName, List<String>
+      componentInstances) throws IOException, YarnException {
+    int result = EXIT_SUCCESS;
+    try {
+      Service service = new Service();
+      service.setName(appName);
+      for (String instance : componentInstances) {
+        String componentName = ServiceApiUtil.parseComponentName(instance);
+        Component component = service.getComponent(componentName);
+        if (component == null) {
+          component = new Component();
+          component.setName(componentName);
+          service.addComponent(component);
+        }
+        component.addDecommissionedInstance(instance);
+      }
+      String buffer = jsonSerDeser.toJson(service);
+      ClientResponse response = getApiClient(getServicePath(appName))
+          .put(ClientResponse.class, buffer);
+      result = processResponse(response);
+    } catch (Exception e) {
+      LOG.error("Fail to decommission instance: ", e);
+      result = EXIT_EXCEPTION_THROWN;
+    }
+    return result;
+  }
 }

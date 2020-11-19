@@ -18,11 +18,18 @@
 package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 
 import com.google.common.base.Supplier;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.DF;
 import org.apache.hadoop.fs.FileSystemTestHelper;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
+import org.apache.hadoop.hdfs.HdfsConfiguration;
+import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.MiniDFSNNTopology;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.datanode.BlockScanner;
 import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
@@ -40,14 +47,22 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DU_RESERVED_PERCENTAGE_KEY;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class TestFsVolumeList {
@@ -196,7 +211,7 @@ public class TestFsVolumeList {
     /*
      * Lets have the example.
      * Capacity - 1000
-     * Reserved - 100
+     * Reserved - 100G
      * DfsUsed  - 200
      * Actual Non-DfsUsed - 300 -->(expected)
      * ReservedForReplicas - 50
@@ -314,5 +329,127 @@ public class TestFsVolumeList {
         .setUsage(usage)
         .build();
     assertEquals(600, volume4.getReserved());
+  }
+
+  @Test(timeout = 60000)
+  public void testAddRplicaProcessorForAddingReplicaInMap() throws Exception {
+    BlockPoolSlice.reInitializeAddReplicaThreadPool();
+    Configuration cnf = new Configuration();
+    int poolSize = 5;
+    cnf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 1);
+    cnf.setInt(
+        DFSConfigKeys.DFS_DATANODE_VOLUMES_REPLICA_ADD_THREADPOOL_SIZE_KEY,
+        poolSize);
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(cnf).numDataNodes(1)
+        .storagesPerDatanode(1).build();
+    DistributedFileSystem fs = cluster.getFileSystem();
+    // Generate data blocks.
+    ExecutorService pool = Executors.newFixedThreadPool(10);
+    List<Future<?>> futureList = new ArrayList<>();
+    for (int i = 0; i < 100; i++) {
+      Thread thread = new Thread() {
+        @Override
+        public void run() {
+          for (int j = 0; j < 10; j++) {
+            try {
+              DFSTestUtil.createFile(fs, new Path("File_" + getName() + j), 10,
+                  (short) 1, 0);
+            } catch (IllegalArgumentException | IOException e) {
+              e.printStackTrace();
+            }
+          }
+        }
+      };
+      thread.setName("FileWriter" + i);
+      futureList.add(pool.submit(thread));
+    }
+    // Wait for data generation
+    for (Future<?> f : futureList) {
+      f.get();
+    }
+    fs.close();
+    FsDatasetImpl fsDataset = (FsDatasetImpl) cluster.getDataNodes().get(0)
+        .getFSDataset();
+    ReplicaMap volumeMap = new ReplicaMap(new ReentrantReadWriteLock());
+    RamDiskReplicaTracker ramDiskReplicaMap = RamDiskReplicaTracker
+        .getInstance(conf, fsDataset);
+    FsVolumeImpl vol = (FsVolumeImpl) fsDataset.getFsVolumeReferences().get(0);
+    String bpid = cluster.getNamesystem().getBlockPoolId();
+    // It will create BlockPoolSlice.AddReplicaProcessor task's and lunch in
+    // ForkJoinPool recursively
+    vol.getVolumeMap(bpid, volumeMap, ramDiskReplicaMap);
+    assertTrue("Failed to add all the replica to map", volumeMap.replicas(bpid)
+        .size() == 1000);
+    assertEquals("Fork pool should be initialize with configured pool size",
+        poolSize, BlockPoolSlice.getAddReplicaForkPoolSize());
+  }
+
+  @Test(timeout = 60000)
+  public void testInstanceOfAddReplicaThreadPool() throws Exception {
+    // Start cluster with multiple namespace
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(
+        new HdfsConfiguration())
+        .nnTopology(MiniDFSNNTopology.simpleFederatedTopology(2))
+        .numDataNodes(1).build()) {
+      cluster.waitActive();
+      FsDatasetImpl fsDataset = (FsDatasetImpl) cluster.getDataNodes().get(0)
+          .getFSDataset();
+      FsVolumeImpl vol = (FsVolumeImpl) fsDataset.getFsVolumeReferences()
+          .get(0);
+      ForkJoinPool threadPool1 = vol.getBlockPoolSlice(
+          cluster.getNamesystem(0).getBlockPoolId()).getAddReplicaThreadPool();
+      ForkJoinPool threadPool2 = vol.getBlockPoolSlice(
+          cluster.getNamesystem(1).getBlockPoolId()).getAddReplicaThreadPool();
+      assertEquals(
+          "Thread pool instance should be same in all the BlockPoolSlice",
+          threadPool1, threadPool2);
+    }
+  }
+
+  @Test
+  public void testGetCachedVolumeCapacity() throws IOException {
+    conf.setBoolean(DFSConfigKeys.DFS_DATANODE_FIXED_VOLUME_SIZE_KEY,
+        DFSConfigKeys.DFS_DATANODE_FIXED_VOLUME_SIZE_DEFAULT);
+
+    long capacity = 4000L;
+    DF usage = mock(DF.class);
+    when(usage.getCapacity()).thenReturn(capacity);
+
+    FsVolumeImpl volumeChanged = new FsVolumeImplBuilder()
+        .setConf(conf)
+        .setDataset(dataset)
+        .setStorageID("storage-id")
+        .setStorageDirectory(new StorageDirectory(StorageLocation.parse(
+            "[RAM_DISK]volume-changed")))
+        .setUsage(usage)
+        .build();
+
+    int callTimes = 5;
+    for(int i = 0; i < callTimes; i++) {
+      assertEquals(capacity, volumeChanged.getCapacity());
+    }
+
+    verify(usage, times(callTimes)).getCapacity();
+
+    conf.setBoolean(DFSConfigKeys.DFS_DATANODE_FIXED_VOLUME_SIZE_KEY, true);
+    FsVolumeImpl volumeFixed = new FsVolumeImplBuilder()
+        .setConf(conf)
+        .setDataset(dataset)
+        .setStorageID("storage-id")
+        .setStorageDirectory(new StorageDirectory(StorageLocation.parse(
+            "[RAM_DISK]volume-fixed")))
+        .setUsage(usage)
+        .build();
+
+    for(int i = 0; i < callTimes; i++) {
+      assertEquals(capacity, volumeFixed.getCapacity());
+    }
+
+    // reuse the capacity for fixed sized volume, only call one time
+    // getCapacity of DF
+    verify(usage, times(callTimes+1)).getCapacity();
+
+    conf.setBoolean(DFSConfigKeys.DFS_DATANODE_FIXED_VOLUME_SIZE_KEY,
+        DFSConfigKeys.DFS_DATANODE_FIXED_VOLUME_SIZE_DEFAULT);
   }
 }

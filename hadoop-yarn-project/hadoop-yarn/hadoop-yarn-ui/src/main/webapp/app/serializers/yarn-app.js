@@ -42,12 +42,15 @@ export default DS.JSONAPISerializer.extend({
           user: payload.user,
           queue: payload.queue,
           state: payload.state,
-          startTime: Converter.timeStampToDate(payload.startedTime),
+          startTime: payload.startedTime, // will be formatted in yarn-app model
           elapsedTime: payload.elapsedTime,
-          finishedTime: Converter.timeStampToDate(payload.finishedTime),
+          finishedTime: payload.finishedTime, // will be formatted in yarn-app model
           finalStatus: payload.finalStatus,
           progress: payload.progress,
           applicationType: payload.applicationType,
+          applicationTags:
+              (payload.applicationTags && payload.applicationTags !== 'null')?
+                  payload.applicationTags : 'N/A',
           diagnostics: (payload.diagnostics && payload.diagnostics !== 'null')? payload.diagnostics : '',
           amHostHttpAddress: payload.amHostHttpAddress,
           masterNodeId: payload.masterNodeId,

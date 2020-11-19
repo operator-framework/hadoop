@@ -65,19 +65,15 @@ public class DockerRunCommand extends DockerCommand {
   }
 
   public DockerRunCommand addMountLocation(String sourcePath, String
-      destinationPath, boolean createSource) {
-    boolean sourceExists = new File(sourcePath).exists();
-    if (!sourceExists && !createSource) {
-      return this;
-    }
-    super.addCommandArguments("rw-mounts", sourcePath + ":" + destinationPath);
+      destinationPath, String mode) {
+    super.addCommandArguments("mounts", sourcePath + ":" +
+        destinationPath + ":" + mode);
     return this;
   }
 
   public DockerRunCommand addReadWriteMountLocation(String sourcePath, String
       destinationPath) {
-    super.addCommandArguments("rw-mounts", sourcePath + ":" + destinationPath);
-    return this;
+    return addMountLocation(sourcePath, destinationPath, "rw");
   }
 
   public DockerRunCommand addAllReadWriteMountLocations(List<String> paths) {
@@ -93,20 +89,23 @@ public class DockerRunCommand extends DockerCommand {
     if (!sourceExists && !createSource) {
       return this;
     }
-    super.addCommandArguments("ro-mounts", sourcePath + ":" + destinationPath);
-    return this;
+    return addReadOnlyMountLocation(sourcePath, destinationPath);
   }
 
   public DockerRunCommand addReadOnlyMountLocation(String sourcePath, String
       destinationPath) {
-    super.addCommandArguments("ro-mounts", sourcePath + ":" + destinationPath);
-    return this;
+    return addMountLocation(sourcePath, destinationPath, "ro");
   }
 
   public DockerRunCommand addAllReadOnlyMountLocations(List<String> paths) {
     for (String dir: paths) {
       this.addReadOnlyMountLocation(dir, dir);
     }
+    return this;
+  }
+
+  public DockerRunCommand addTmpfsMount(String mount) {
+    super.addCommandArguments("tmpfs", mount);
     return this;
   }
 
@@ -160,6 +159,17 @@ public class DockerRunCommand extends DockerCommand {
     return this;
   }
 
+  /* Ports mapping for bridge network, -p */
+  public DockerRunCommand addPortsMapping(String mapping) {
+    super.addCommandArguments("ports-mapping", mapping);
+    return this;
+  }
+
+  public DockerRunCommand addRuntime(String runtime) {
+    super.addCommandArguments("runtime", runtime);
+    return this;
+  }
+
   public DockerRunCommand groupAdd(String[] groups) {
     super.addCommandArguments("group-add", String.join(",", groups));
     return this;
@@ -186,6 +196,12 @@ public class DockerRunCommand extends DockerCommand {
 
   public DockerRunCommand setLogDir(String logDir) {
     super.addCommandArguments("log-dir", logDir);
+    return this;
+  }
+
+  public DockerRunCommand setServiceMode(boolean serviceMode) {
+    String value = Boolean.toString(serviceMode);
+    super.addCommandArguments("service-mode", value);
     return this;
   }
 
@@ -217,5 +233,11 @@ public class DockerRunCommand extends DockerCommand {
    */
   public final void addEnv(Map<String, String> environment) {
     userEnv.putAll(environment);
+  }
+
+  public DockerRunCommand setYarnSysFS(boolean toggle) {
+    String value = Boolean.toString(toggle);
+    super.addCommandArguments("use-yarn-sysfs", value);
+    return this;
   }
 }

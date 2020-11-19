@@ -35,6 +35,8 @@ import org.slf4j.LoggerFactory;
 
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
+import static org.apache.hadoop.util.Time.monotonicNow;
+
 /**
  * Customizable RPC performance monitor. Receives events from the RPC server
  * and aggregates them via JMX.
@@ -120,14 +122,14 @@ public class FederationRPCPerformanceMonitor implements RouterRpcMonitor {
 
   @Override
   public void startOp() {
-    START_TIME.set(this.getNow());
+    START_TIME.set(monotonicNow());
   }
 
   @Override
   public long proxyOp() {
-    PROXY_TIME.set(this.getNow());
+    PROXY_TIME.set(monotonicNow());
     long processingTime = getProcessingTime();
-    if (processingTime >= 0) {
+    if (metrics != null && processingTime >= 0) {
       metrics.addProcessingTime(processingTime);
     }
     return Thread.currentThread().getId();
@@ -137,7 +139,7 @@ public class FederationRPCPerformanceMonitor implements RouterRpcMonitor {
   public void proxyOpComplete(boolean success) {
     if (success) {
       long proxyTime = getProxyTime();
-      if (proxyTime >= 0) {
+      if (metrics != null && proxyTime >= 0) {
         metrics.addProxyTime(proxyTime);
       }
     }
@@ -145,12 +147,23 @@ public class FederationRPCPerformanceMonitor implements RouterRpcMonitor {
 
   @Override
   public void proxyOpFailureStandby() {
-    metrics.incrProxyOpFailureStandby();
+    if (metrics != null) {
+      metrics.incrProxyOpFailureStandby();
+    }
   }
 
   @Override
   public void proxyOpFailureCommunicate() {
-    metrics.incrProxyOpFailureCommunicate();
+    if (metrics != null) {
+      metrics.incrProxyOpFailureCommunicate();
+    }
+  }
+
+  @Override
+  public void proxyOpFailureClientOverloaded() {
+    if (metrics != null) {
+      metrics.incrProxyOpFailureClientOverloaded();
+    }
   }
 
   @Override
@@ -160,41 +173,53 @@ public class FederationRPCPerformanceMonitor implements RouterRpcMonitor {
 
   @Override
   public void proxyOpNotImplemented() {
-    metrics.incrProxyOpNotImplemented();
+    if (metrics != null) {
+      metrics.incrProxyOpNotImplemented();
+    }
   }
 
   @Override
   public void proxyOpRetries() {
-    metrics.incrProxyOpRetries();
+    if (metrics != null) {
+      metrics.incrProxyOpRetries();
+    }
+  }
+
+  @Override
+  public void proxyOpNoNamenodes() {
+    if (metrics != null) {
+      metrics.incrProxyOpNoNamenodes();
+    }
   }
 
   @Override
   public void routerFailureStateStore() {
-    metrics.incrRouterFailureStateStore();
+    if (metrics != null) {
+      metrics.incrRouterFailureStateStore();
+    }
   }
 
   @Override
   public void routerFailureSafemode() {
-    metrics.incrRouterFailureSafemode();
+    if (metrics != null) {
+      metrics.incrRouterFailureSafemode();
+    }
   }
 
   @Override
   public void routerFailureReadOnly() {
-    metrics.incrRouterFailureReadOnly();
+    if (metrics != null) {
+      metrics.incrRouterFailureReadOnly();
+    }
   }
 
   @Override
   public void routerFailureLocked() {
-    metrics.incrRouterFailureLocked();
+    if (metrics != null) {
+      metrics.incrRouterFailureLocked();
+    }
   }
 
-  /**
-   * Get current time.
-   * @return Current time in nanoseconds.
-   */
-  private long getNow() {
-    return System.nanoTime();
-  }
 
   /**
    * Get time between we receiving the operation and sending it to the Namenode.
@@ -214,7 +239,7 @@ public class FederationRPCPerformanceMonitor implements RouterRpcMonitor {
    */
   private long getProxyTime() {
     if (PROXY_TIME.get() != null && PROXY_TIME.get() > 0) {
-      return getNow() - PROXY_TIME.get();
+      return monotonicNow() - PROXY_TIME.get();
     }
     return -1;
   }
