@@ -167,8 +167,6 @@ public class JsonUtilClient {
 
     }
 
-    Map<String, Object> ecPolicyObj = (Map) m.get("ecPolicyObj");
-    ErasureCodingPolicy ecPolicy = null;
     if (ecPolicyObj != null) {
       Map<String, String> extraOptions = (Map) ecPolicyObj.get("extraOptions");
       ECSchema ecSchema = new ECSchema((String) ecPolicyObj.get("codecName"),

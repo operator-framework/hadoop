@@ -315,48 +315,6 @@ public class PBHelperClient {
         options.getStripeLength());
   }
 
-  public static HdfsProtos.BlockChecksumTypeProto convert(
-      BlockChecksumType type) {
-    switch(type) {
-    case MD5CRC:
-      return HdfsProtos.BlockChecksumTypeProto.MD5CRC;
-    case COMPOSITE_CRC:
-      return HdfsProtos.BlockChecksumTypeProto.COMPOSITE_CRC;
-    default:
-      throw new IllegalStateException(
-          "BUG: BlockChecksumType not found, type=" + type);
-    }
-  }
-
-  public static BlockChecksumType convert(
-      HdfsProtos.BlockChecksumTypeProto blockChecksumTypeProto) {
-    switch(blockChecksumTypeProto) {
-    case MD5CRC:
-      return BlockChecksumType.MD5CRC;
-    case COMPOSITE_CRC:
-      return BlockChecksumType.COMPOSITE_CRC;
-    default:
-      throw new IllegalStateException(
-          "BUG: BlockChecksumTypeProto not found, type="
-          + blockChecksumTypeProto);
-    }
-  }
-
-  public static HdfsProtos.BlockChecksumOptionsProto convert(
-      BlockChecksumOptions options) {
-    return HdfsProtos.BlockChecksumOptionsProto.newBuilder()
-        .setBlockChecksumType(convert(options.getBlockChecksumType()))
-        .setStripeLength(options.getStripeLength())
-        .build();
-  }
-
-  public static BlockChecksumOptions convert(
-      HdfsProtos.BlockChecksumOptionsProto options) {
-    return new BlockChecksumOptions(
-        convert(options.getBlockChecksumType()),
-        options.getStripeLength());
-  }
-
   public static ExtendedBlockProto convert(final ExtendedBlock b) {
     if (b == null) return null;
     return ExtendedBlockProto.newBuilder().
