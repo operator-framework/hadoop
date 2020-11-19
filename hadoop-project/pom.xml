@@ -1181,11 +1181,6 @@
         <version>2.6</version>
       </dependency>
       <dependency>
-        <groupId>org.objenesis</groupId>
-        <artifactId>objenesis</artifactId>
-        <version>1.0</version>
-      </dependency>
-      <dependency>
         <groupId>org.mock-server</groupId>
         <artifactId>mockserver-netty</artifactId>
         <version>3.9.2</version>
