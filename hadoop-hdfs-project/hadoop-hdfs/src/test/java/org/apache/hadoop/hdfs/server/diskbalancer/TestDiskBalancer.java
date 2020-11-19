@@ -341,66 +341,6 @@ public class TestDiskBalancer {
     }
   }
 
-
-  @Test
-  public void testDiskBalancerWithFedClusterWithOneNameServiceEmpty() throws
-      Exception {
-    Configuration conf = new HdfsConfiguration();
-    conf.setBoolean(DFSConfigKeys.DFS_DISK_BALANCER_ENABLED, true);
-    final int blockCount = 100;
-    final int blockSize = 1024;
-    final int diskCount = 2;
-    final int dataNodeCount = 1;
-    final int dataNodeIndex = 0;
-    final int sourceDiskIndex = 0;
-    final long cap = blockSize * 3L * blockCount;
-
-    conf.setInt(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
-    conf.setInt(DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY, blockSize);
-
-    final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
-        .nnTopology(MiniDFSNNTopology.simpleFederatedTopology(2))
-        .numDataNodes(dataNodeCount)
-        .storagesPerDatanode(diskCount)
-        .storageCapacities(new long[] {cap, cap})
-        .build();
-    cluster.waitActive();
-
-    DFSTestUtil.setFederatedConfiguration(cluster, conf);
-
-    final String fileName = "/tmp.txt";
-    final Path filePath = new Path(fileName);
-    long fileLen = blockCount * blockSize;
-
-
-    //Writing data only to one nameservice.
-    FileSystem fs = cluster.getFileSystem(0);
-    TestBalancer.createFile(cluster, filePath, fileLen, (short) 1,
-        0);
-    DFSTestUtil.waitReplication(fs, filePath, (short) 1);
-
-
-    GenericTestUtils.LogCapturer logCapturer = GenericTestUtils.LogCapturer
-        .captureLogs(DiskBalancer.LOG);
-
-    try {
-      DataMover dataMover = new DataMover(cluster, dataNodeIndex,
-          sourceDiskIndex, conf, blockSize, blockCount);
-      dataMover.moveDataToSourceDisk();
-      NodePlan plan = dataMover.generatePlan();
-      dataMover.executePlan(plan);
-      dataMover.verifyPlanExectionDone();
-      //Because here we have one nameservice empty, don't check
-      // blockPoolCount.
-      dataMover.verifyAllVolumesHaveData(false);
-    } finally {
-      Assert.assertTrue(logCapturer.getOutput().contains("There are no " +
-          "blocks in the blockPool"));
-      cluster.shutdown();
-    }
-
-  }
-
   @Test
   public void testBalanceDataBetweenMultiplePairsOfVolumes()
       throws Exception {
