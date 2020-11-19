@@ -98,13 +98,6 @@ public class DatanodeHttpServer implements Closeable {
   private InetSocketAddress httpAddress;
   private InetSocketAddress httpsAddress;
 
-  // HttpServer threads are only used for the web UI and basic servlets, so
-  // set them to the minimum possible
-  private static final int HTTP_SELECTOR_THREADS = 1;
-  private static final int HTTP_ACCEPTOR_THREADS = 1;
-  private static final int HTTP_MAX_THREADS =
-      HTTP_SELECTOR_THREADS + HTTP_ACCEPTOR_THREADS + 1;
-
   public DatanodeHttpServer(final Configuration conf,
         final DataNode datanode,
         final ServerSocketChannel externalHttpChannel)
