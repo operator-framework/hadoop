@@ -814,20 +814,6 @@
                 </configuration>
               </execution>
               <execution>
-                <id>convert-ms-winutils</id>
-                <phase>generate-sources</phase>
-                <goals>
-                  <goal>exec</goal>
-                </goals>
-                <configuration>
-                  <executable>${basedir}\..\..\dev-support\bin\win-vs-upgrade.cmd</executable>
-                  <arguments>
-                    <argument>${basedir}\src\main\winutils</argument>
-                    <argument>${project.build.directory}</argument>
-                  </arguments>
-                </configuration>
-              </execution>
-              <execution>
                 <id>compile-ms-winutils</id>
                 <phase>compile</phase>
                 <goals>
