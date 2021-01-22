@@ -1,8 +1,10 @@
-FROM registry.ci.openshift.org/openshift/release:rhel-7-release-openshift-4.7 AS build
+FROM registry.svc.ci.openshift.org/openshift/release:rhel-7-release-openshift-4.7 AS build
 # This FROM is RHEL7 based because the CI based hadoop build requires a precise
 # version of protobuf (2.5.0) which is unavilable on RHEL8. Downstream
 # production builds use RHEL8 for this builder image since protobuf 2.5.0 is not
 # required and ARM builds require RHEL8.
+# Note(tflannag): We need to use the registry.svc.ci registry as this image doesn't
+# exist in the registry.ci registry.
 
 RUN mkdir /build
 COPY . /build
