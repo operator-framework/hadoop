@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.service.client;
 
 import com.google.common.annotations.VisibleForTesting;
+
 import org.apache.commons.lang.StringUtils;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
@@ -54,9 +55,13 @@ import org.apache.hadoop.yarn.client.util.YarnClientUtils;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.CancelUpgradeRequestProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.CompInstancesUpgradeRequestProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.ComponentCountProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.DecommissionCompInstancesRequestProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.FlexComponentsRequestProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.GetCompInstancesRequestProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.GetCompInstancesResponseProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.GetStatusRequestProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.GetStatusResponseProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.RestartServiceRequestProto;
@@ -66,6 +71,7 @@ import org.apache.hadoop.yarn.proto.ClientAMProtocol.UpgradeServiceResponseProto
 import org.apache.hadoop.yarn.service.ClientAMProtocol;
 import org.apache.hadoop.yarn.service.ServiceMaster;
 import org.apache.hadoop.yarn.service.api.records.Container;
+import org.apache.hadoop.yarn.service.api.records.ContainerState;
 import org.apache.hadoop.yarn.service.api.records.Component;
 import org.apache.hadoop.yarn.service.api.records.Service;
 import org.apache.hadoop.yarn.service.api.records.ServiceState;
@@ -100,6 +106,7 @@ import java.nio.ByteBuffer;
 import java.text.MessageFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 import static org.apache.hadoop.yarn.api.records.YarnApplicationState.*;
 import static org.apache.hadoop.yarn.service.conf.YarnServiceConf.*;
@@ -143,6 +150,7 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
     if (registryClient != null) {
       registryClient.stop();
     }
+    fs.getFileSystem().close();
     super.serviceStop();
   }
 
@@ -211,6 +219,84 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
     return EXIT_SUCCESS;
   }
 
+  private ApplicationReport upgradePrecheck(Service service)
+      throws YarnException, IOException {
+    boolean upgradeEnabled = getConfig().getBoolean(
+        YARN_SERVICE_UPGRADE_ENABLED, YARN_SERVICE_UPGRADE_ENABLED_DEFAULT);
+    if (!upgradeEnabled) {
+      throw new YarnException(ErrorStrings.SERVICE_UPGRADE_DISABLED);
+    }
+    Service persistedService = ServiceApiUtil.loadService(fs,
+        service.getName());
+    if (!StringUtils.isEmpty(persistedService.getId())) {
+      cachedAppInfo.put(persistedService.getName(),
+          new AppInfo(ApplicationId.fromString(persistedService.getId()),
+              persistedService.getKerberosPrincipal().getPrincipalName()));
+    }
+
+    if (persistedService.getVersion().equals(service.getVersion())) {
+      String message = service.getName() + " is already at version "
+          + service.getVersion() + ". There is nothing to upgrade.";
+      LOG.error(message);
+      throw new YarnException(message);
+    }
+
+    Service liveService = getStatus(service.getName());
+    if (!liveService.getState().equals(ServiceState.STABLE)) {
+      String message = service.getName() + " is at " + liveService.getState()
+          + " state and upgrade can only be initiated when service is STABLE.";
+      LOG.error(message);
+      throw new YarnException(message);
+    }
+
+    Path serviceUpgradeDir = checkAppNotExistOnHdfs(service, true);
+    ServiceApiUtil.validateAndResolveService(service, fs, getConfig());
+    ServiceApiUtil.createDirAndPersistApp(fs, serviceUpgradeDir, service);
+
+    ApplicationReport appReport = yarnClient
+        .getApplicationReport(getAppId(service.getName()));
+    if (StringUtils.isEmpty(appReport.getHost())) {
+      throw new YarnException(service.getName() + " AM hostname is empty");
+    }
+    return appReport;
+  }
+
+  @Override
+  public int actionUpgradeExpress(String appName, File path)
+      throws IOException, YarnException {
+    Service service =
+        loadAppJsonFromLocalFS(path.getAbsolutePath(), appName, null, null);
+    service.setState(ServiceState.UPGRADING_AUTO_FINALIZE);
+    actionUpgradeExpress(service);
+    return EXIT_SUCCESS;
+  }
+
+  public int actionUpgradeExpress(Service service) throws YarnException,
+      IOException {
+    ApplicationReport appReport = upgradePrecheck(service);
+    ClientAMProtocol proxy = createAMProxy(service.getName(), appReport);
+    UpgradeServiceRequestProto.Builder requestBuilder =
+        UpgradeServiceRequestProto.newBuilder();
+    requestBuilder.setVersion(service.getVersion());
+    if (service.getState().equals(ServiceState.UPGRADING_AUTO_FINALIZE)) {
+      requestBuilder.setAutoFinalize(true);
+    }
+    if (service.getState().equals(ServiceState.EXPRESS_UPGRADING)) {
+      requestBuilder.setExpressUpgrade(true);
+      requestBuilder.setAutoFinalize(true);
+    }
+    UpgradeServiceResponseProto responseProto = proxy.upgrade(
+        requestBuilder.build());
+    if (responseProto.hasError()) {
+      LOG.error("Service {} express upgrade to version {} failed because {}",
+          service.getName(), service.getVersion(), responseProto.getError());
+      throw new YarnException("Failed to express upgrade service " +
+          service.getName() + " to version " + service.getVersion() +
+          " because " + responseProto.getError());
+    }
+    return EXIT_SUCCESS;
+  }
+
   @Override
   public int initiateUpgrade(String appName, String fileName,
       boolean autoFinalize)
@@ -227,46 +313,7 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
 
   public int initiateUpgrade(Service service) throws YarnException,
       IOException {
-    boolean upgradeEnabled = getConfig().getBoolean(
-        YARN_SERVICE_UPGRADE_ENABLED,
-        YARN_SERVICE_UPGRADE_ENABLED_DEFAULT);
-    if (!upgradeEnabled) {
-      throw new YarnException(ErrorStrings.SERVICE_UPGRADE_DISABLED);
-    }
-    Service persistedService =
-        ServiceApiUtil.loadService(fs, service.getName());
-    if (!StringUtils.isEmpty(persistedService.getId())) {
-      cachedAppInfo.put(persistedService.getName(), new AppInfo(
-          ApplicationId.fromString(persistedService.getId()),
-          persistedService.getKerberosPrincipal().getPrincipalName()));
-    }
-
-    if (persistedService.getVersion().equals(service.getVersion())) {
-      String message =
-          service.getName() + " is already at version " + service.getVersion()
-              + ". There is nothing to upgrade.";
-      LOG.error(message);
-      throw new YarnException(message);
-    }
-
-    Service liveService = getStatus(service.getName());
-    if (!liveService.getState().equals(ServiceState.STABLE)) {
-      String message = service.getName() + " is at " +
-          liveService.getState()
-          + " state, upgrade can not be invoked when service is STABLE.";
-      LOG.error(message);
-      throw new YarnException(message);
-    }
-
-    Path serviceUpgradeDir = checkAppNotExistOnHdfs(service, true);
-    ServiceApiUtil.validateAndResolveService(service, fs, getConfig());
-    ServiceApiUtil.createDirAndPersistApp(fs, serviceUpgradeDir, service);
-
-    ApplicationReport appReport =
-        yarnClient.getApplicationReport(getAppId(service.getName()));
-    if (StringUtils.isEmpty(appReport.getHost())) {
-      throw new YarnException(service.getName() + " AM hostname is empty");
-    }
+    ApplicationReport appReport = upgradePrecheck(service);
     ClientAMProtocol proxy = createAMProxy(service.getName(), appReport);
 
     UpgradeServiceRequestProto.Builder requestBuilder =
@@ -309,6 +356,81 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
   }
 
   @Override
+  public int actionCancelUpgrade(String appName) throws IOException,
+      YarnException {
+    Service liveService = getStatus(appName);
+    if (liveService == null ||
+        !ServiceState.isUpgrading(liveService.getState())) {
+      throw new YarnException("Service " + appName + " is not upgrading, " +
+          "so nothing to cancel.");
+    }
+
+    ApplicationReport appReport = yarnClient.getApplicationReport(
+        getAppId(appName));
+    if (StringUtils.isEmpty(appReport.getHost())) {
+      throw new YarnException(appName + " AM hostname is empty");
+    }
+    ClientAMProtocol proxy = createAMProxy(appName, appReport);
+    proxy.cancelUpgrade(CancelUpgradeRequestProto.newBuilder().build());
+    return EXIT_SUCCESS;
+  }
+
+  @Override
+  public int actionDecommissionInstances(String appName,
+      List<String> componentInstances) throws IOException, YarnException {
+    checkAppExistOnHdfs(appName);
+    Service persistedService = ServiceApiUtil.loadService(fs, appName);
+    if (StringUtils.isEmpty(persistedService.getId())) {
+      throw new YarnException(
+          persistedService.getName() + " appId is null, may be not submitted " +
+              "to YARN yet");
+    }
+    cachedAppInfo.put(persistedService.getName(), new AppInfo(
+        ApplicationId.fromString(persistedService.getId()), persistedService
+        .getKerberosPrincipal().getPrincipalName()));
+
+    for (String instance : componentInstances) {
+      String componentName = ServiceApiUtil.parseComponentName(
+          ServiceApiUtil.parseAndValidateComponentInstanceName(instance,
+              appName, getConfig()));
+      Component component = persistedService.getComponent(componentName);
+      if (component == null) {
+        throw new IllegalArgumentException(instance + " does not exist !");
+      }
+      if (!component.getDecommissionedInstances().contains(instance)) {
+        component.addDecommissionedInstance(instance);
+        component.setNumberOfContainers(Math.max(0, component
+            .getNumberOfContainers() - 1));
+      }
+    }
+    ServiceApiUtil.writeAppDefinition(fs, persistedService);
+
+    ApplicationReport appReport =
+        yarnClient.getApplicationReport(ApplicationId.fromString(
+            persistedService.getId()));
+    if (appReport.getYarnApplicationState() != RUNNING) {
+      String message =
+          persistedService.getName() + " is at " + appReport
+              .getYarnApplicationState() + " state, decommission can only be " +
+              "invoked when service is running";
+      LOG.error(message);
+      throw new YarnException(message);
+    }
+
+    if (StringUtils.isEmpty(appReport.getHost())) {
+      throw new YarnException(persistedService.getName() + " AM hostname is " +
+          "empty");
+    }
+    ClientAMProtocol proxy =
+        createAMProxy(persistedService.getName(), appReport);
+    DecommissionCompInstancesRequestProto.Builder requestBuilder =
+        DecommissionCompInstancesRequestProto.newBuilder();
+    requestBuilder.addAllCompInstances(componentInstances);
+    proxy.decommissionCompInstances(requestBuilder.build());
+    return EXIT_SUCCESS;
+  }
+
+  @Override
   public int actionCleanUp(String appName, String userName) throws
       IOException, YarnException {
     if (cleanUpRegistry(appName, userName)) {
@@ -316,6 +438,49 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
     } else {
       return EXIT_FALSE;
     }
+  }
+
+  @Override
+  public String getInstances(String appName,
+      List<String> components, String version, List<String> containerStates)
+      throws IOException, YarnException {
+    GetCompInstancesResponseProto result = filterContainers(appName, components,
+        version, containerStates);
+    return result.getCompInstances();
+  }
+
+  public Container[] getContainers(String appName, List<String> components,
+      String version, List<ContainerState> containerStates)
+      throws IOException, YarnException {
+    GetCompInstancesResponseProto result = filterContainers(appName, components,
+        version, containerStates != null ? containerStates.stream()
+            .map(Enum::toString).collect(Collectors.toList()) : null);
+
+    return ServiceApiUtil.CONTAINER_JSON_SERDE.fromJson(
+        result.getCompInstances());
+  }
+
+  private GetCompInstancesResponseProto filterContainers(String appName,
+      List<String> components, String version,
+      List<String> containerStates) throws IOException, YarnException {
+    ApplicationReport appReport = yarnClient.getApplicationReport(getAppId(
+        appName));
+    if (StringUtils.isEmpty(appReport.getHost())) {
+      throw new YarnException(appName + " AM hostname is empty.");
+    }
+    ClientAMProtocol proxy = createAMProxy(appName, appReport);
+    GetCompInstancesRequestProto.Builder req = GetCompInstancesRequestProto
+        .newBuilder();
+    if (components != null && !components.isEmpty()) {
+      req.addAllComponentNames(components);
+    }
+    if (version != null) {
+      req.setVersion(version);
+    }
+    if (containerStates != null && !containerStates.isEmpty()){
+      req.addAllContainerStates(containerStates);
+    }
+    return proxy.getCompInstances(req.build());
   }
 
   public int actionUpgrade(Service service, List<Container> compInstances)
@@ -468,9 +633,7 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
       throw new YarnException("Components " + componentCounts.keySet()
           + " do not exist in app definition.");
     }
-    jsonSerDeser
-        .save(fs.getFileSystem(), ServiceApiUtil.getServiceJsonPath(fs, serviceName),
-            persistedService, true);
+    ServiceApiUtil.writeAppDefinition(fs, persistedService);
 
     ApplicationId appId = getAppId(serviceName);
     if (appId == null) {
@@ -886,6 +1049,9 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
       jvmOpts += DEFAULT_AM_JVM_XMX;
     }
 
+    // validate possible command injection.
+    ServiceApiUtil.validateJvmOpts(jvmOpts);
+
     CLI.setJVMOpts(jvmOpts);
     if (hasSliderAMLog4j) {
       CLI.sysprop(SYSPROP_LOG4J_CONFIGURATION, YARN_SERVICE_LOG4J_FILENAME);
@@ -1027,7 +1193,7 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
       LOG.info("Persisted service " + service.getName() + " at " + appJson);
       return appId;
     } else {
-      LOG.info("Finalize service {} upgrade");
+      LOG.info("Finalize service {} upgrade", serviceName);
       ApplicationId appId = getAppId(serviceName);
       ApplicationReport appReport = yarnClient.getApplicationReport(appId);
       if (StringUtils.isEmpty(appReport.getHost())) {
@@ -1131,31 +1297,21 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
       throw new YarnException(e);
     }
 
-    if (keytabURI.getScheme() != null) {
-      switch (keytabURI.getScheme()) {
-      case "hdfs":
-        Path keytabOnhdfs = new Path(keytabURI);
-        if (!fileSystem.getFileSystem().exists(keytabOnhdfs)) {
-          LOG.warn(service.getName() + "'s keytab (principalName = "
-              + principalName + ") doesn't exist at: " + keytabOnhdfs);
-          return;
-        }
-        LocalResource keytabRes = fileSystem.createAmResource(keytabOnhdfs,
-            LocalResourceType.FILE);
-        localResource.put(String.format(YarnServiceConstants.KEYTAB_LOCATION,
-            service.getName()), keytabRes);
-        LOG.info("Adding " + service.getName() + "'s keytab for "
-            + "localization, uri = " + keytabOnhdfs);
-        break;
-      case "file":
-        LOG.info("Using a keytab from localhost: " + keytabURI);
-        break;
-      default:
-        LOG.warn("Unsupported keytab URI scheme " + keytabURI);
-        break;
-      }
+    if ("file".equals(keytabURI.getScheme())) {
+      LOG.info("Using a keytab from localhost: " + keytabURI);
     } else {
-      LOG.warn("Unsupported keytab URI scheme " + keytabURI);
+      Path keytabOnhdfs = new Path(keytabURI);
+      if (!fileSystem.getFileSystem().exists(keytabOnhdfs)) {
+        LOG.warn(service.getName() + "'s keytab (principalName = "
+            + principalName + ") doesn't exist at: " + keytabOnhdfs);
+        return;
+      }
+      LocalResource keytabRes = fileSystem.createAmResource(keytabOnhdfs,
+          LocalResourceType.FILE);
+      localResource.put(String.format(YarnServiceConstants.KEYTAB_LOCATION,
+          service.getName()), keytabRes);
+      LOG.info("Adding " + service.getName() + "'s keytab for "
+          + "localization, uri = " + keytabOnhdfs);
     }
   }
 

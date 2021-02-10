@@ -27,6 +27,7 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.crypto.CryptoProtocolVersion;
 import org.apache.hadoop.fs.BatchedRemoteIterator.BatchedEntries;
 import org.apache.hadoop.fs.PathIsNotEmptyDirectoryException;
+import org.apache.hadoop.ha.HAServiceProtocol;
 import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.fs.CacheFlag;
 import org.apache.hadoop.fs.ContentSummary;
@@ -48,6 +49,7 @@ import org.apache.hadoop.hdfs.protocol.OpenFilesIterator.OpenFilesType;
 import org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenSelector;
+import org.apache.hadoop.hdfs.server.namenode.ha.ReadOnly;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
 import org.apache.hadoop.io.EnumSetWritable;
 import org.apache.hadoop.io.Text;
@@ -128,6 +130,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly(atimeAffected = true, isCoordinated = true)
   LocatedBlocks getBlockLocations(String src, long offset, long length)
       throws IOException;
 
@@ -137,6 +140,7 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   FsServerDefaults getServerDefaults() throws IOException;
 
   /**
@@ -277,6 +281,7 @@ public interface ClientProtocol {
    * @return All the in-use block storage policies currently.
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   BlockStoragePolicy[] getStoragePolicies() throws IOException;
 
   /**
@@ -319,6 +324,7 @@ public interface ClientProtocol {
    *           If file/dir <code>src</code> is not found
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   BlockStoragePolicy getStoragePolicy(String path) throws IOException;
 
   /**
@@ -685,16 +691,19 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   DirectoryListing getListing(String src, byte[] startAfter,
       boolean needLocation) throws IOException;
 
   /**
-   * Get listing of all the snapshottable directories.
-   *
-   * @return Information about all the current snapshottable directory
-   * @throws IOException If an I/O error occurred
+   * Get the list of snapshottable directories that are owned
+   * by the current user. Return all the snapshottable directories if the
+   * current user is a super user.
+   * @return The list of all the current snapshottable directories.
+   * @throws IOException If an I/O error occurred.
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   SnapshottableDirectoryStatus[] getSnapshottableDirListing()
       throws IOException;
 
@@ -775,6 +784,7 @@ public interface ClientProtocol {
    * </ul>
    */
   @Idempotent
+  @ReadOnly
   long[] getStats() throws IOException;
 
   /**
@@ -782,6 +792,7 @@ public interface ClientProtocol {
    * in the filesystem.
    */
   @Idempotent
+  @ReadOnly
   ReplicatedBlockStats getReplicatedBlockStats() throws IOException;
 
   /**
@@ -789,6 +800,7 @@ public interface ClientProtocol {
    * in the filesystem.
    */
   @Idempotent
+  @ReadOnly
   ECBlockGroupStats getECBlockGroupStats() throws IOException;
 
   /**
@@ -798,6 +810,7 @@ public interface ClientProtocol {
    * otherwise all datanodes if type is ALL.
    */
   @Idempotent
+  @ReadOnly
   DatanodeInfo[] getDatanodeReport(HdfsConstants.DatanodeReportType type)
       throws IOException;
 
@@ -805,6 +818,7 @@ public interface ClientProtocol {
    * Get a report on the current datanode storages.
    */
   @Idempotent
+  @ReadOnly
   DatanodeStorageReport[] getDatanodeStorageReport(
       HdfsConstants.DatanodeReportType type) throws IOException;
 
@@ -817,6 +831,7 @@ public interface ClientProtocol {
    *           a symlink.
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   long getPreferredBlockSize(String filename)
       throws IOException;
 
@@ -970,6 +985,7 @@ public interface ClientProtocol {
    * cookie returned from the previous call.
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   CorruptFileBlocks listCorruptFileBlocks(String path, String cookie)
       throws IOException;
 
@@ -1005,6 +1021,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   HdfsFileStatus getFileInfo(String src) throws IOException;
 
   /**
@@ -1019,6 +1036,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   boolean isFileClosed(String src) throws IOException;
 
   /**
@@ -1035,6 +1053,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   HdfsFileStatus getFileLinkInfo(String src) throws IOException;
 
   /**
@@ -1049,6 +1068,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   HdfsLocatedFileStatus getLocatedFileInfo(String src, boolean needBlockToken)
       throws IOException;
 
@@ -1063,6 +1083,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   ContentSummary getContentSummary(String path) throws IOException;
 
   /**
@@ -1175,6 +1196,7 @@ public interface ClientProtocol {
    *           or an I/O error occurred
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   String getLinkTarget(String path) throws IOException;
 
   /**
@@ -1245,6 +1267,7 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   DataEncryptionKey getDataEncryptionKey() throws IOException;
 
   /**
@@ -1313,6 +1336,7 @@ public interface ClientProtocol {
    * @throws IOException on error
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   SnapshotDiffReport getSnapshotDiffReport(String snapshotRoot,
       String fromSnapshot, String toSnapshot) throws IOException;
 
@@ -1340,6 +1364,7 @@ public interface ClientProtocol {
    * @throws IOException on error
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   SnapshotDiffReportListing getSnapshotDiffReportListing(String snapshotRoot,
       String fromSnapshot, String toSnapshot, byte[] startPath, int index)
       throws IOException;
@@ -1386,6 +1411,7 @@ public interface ClientProtocol {
    * @return A batch of CacheDirectiveEntry objects.
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   BatchedEntries<CacheDirectiveEntry> listCacheDirectives(
       long prevId, CacheDirectiveInfo filter) throws IOException;
 
@@ -1427,6 +1453,7 @@ public interface ClientProtocol {
    * @return A batch of CachePoolEntry objects.
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   BatchedEntries<CachePoolEntry> listCachePools(String prevPool)
       throws IOException;
 
@@ -1473,6 +1500,7 @@ public interface ClientProtocol {
    * Gets the ACLs of files and directories.
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   AclStatus getAclStatus(String src) throws IOException;
 
   /**
@@ -1486,6 +1514,7 @@ public interface ClientProtocol {
    * Get the encryption zone for a path.
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   EncryptionZone getEZForPath(String src)
     throws IOException;
 
@@ -1497,6 +1526,7 @@ public interface ClientProtocol {
    * @return Batch of encryption zones.
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   BatchedEntries<EncryptionZone> listEncryptionZones(
       long prevId) throws IOException;
 
@@ -1521,6 +1551,7 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   BatchedEntries<ZoneReencryptionStatus> listReencryptionStatus(long prevId)
       throws IOException;
 
@@ -1554,6 +1585,7 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   List<XAttr> getXAttrs(String src, List<XAttr> xAttrs)
       throws IOException;
 
@@ -1569,6 +1601,7 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   List<XAttr> listXAttrs(String src)
       throws IOException;
 
@@ -1603,6 +1636,7 @@ public interface ClientProtocol {
    * @throws IOException see specific implementation
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   void checkAccess(String path, FsAction mode) throws IOException;
 
   /**
@@ -1611,6 +1645,7 @@ public interface ClientProtocol {
    * the starting point for the inotify event stream.
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   long getCurrentEditLogTxid() throws IOException;
 
   /**
@@ -1618,6 +1653,7 @@ public interface ClientProtocol {
    * transactions for txids equal to or greater than txid.
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   EventBatchList getEditsFromTxid(long txid) throws IOException;
 
   /**
@@ -1675,6 +1711,7 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   ErasureCodingPolicyInfo[] getErasureCodingPolicies() throws IOException;
 
   /**
@@ -1683,6 +1720,7 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   Map<String, String> getErasureCodingCodecs() throws IOException;
 
   /**
@@ -1693,6 +1731,7 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   ErasureCodingPolicy getErasureCodingPolicy(String src) throws IOException;
 
   /**
@@ -1704,6 +1743,11 @@ public interface ClientProtocol {
 
   /**
    * Get {@link QuotaUsage} rooted at the specified directory.
+   *
+   * Note: due to HDFS-6763, standby/observer doesn't keep up-to-date info
+   * about quota usage, and thus even though this is ReadOnly, it can only be
+   * directed to the active namenode.
+   *
    * @param path The string representation of the path
    *
    * @throws AccessControlException permission denied
@@ -1713,6 +1757,7 @@ public interface ClientProtocol {
    * @throws IOException If an I/O error occurred
    */
   @Idempotent
+  @ReadOnly(activeOnly = true)
   QuotaUsage getQuotaUsage(String path) throws IOException;
 
   /**
@@ -1726,6 +1771,7 @@ public interface ClientProtocol {
    */
   @Idempotent
   @Deprecated
+  @ReadOnly(isCoordinated = true)
   BatchedEntries<OpenFileEntry> listOpenFiles(long prevId) throws IOException;
 
   /**
@@ -1740,6 +1786,28 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
+  @ReadOnly(isCoordinated = true)
   BatchedEntries<OpenFileEntry> listOpenFiles(long prevId,
       EnumSet<OpenFilesType> openFilesTypes, String path) throws IOException;
+
+  /**
+   * Get HA service state of the server.
+   *
+   * @return server HA state
+   * @throws IOException
+   */
+  @Idempotent
+  @ReadOnly
+  HAServiceProtocol.HAServiceState getHAServiceState() throws IOException;
+
+  /**
+   * Called by client to wait until the server has reached the state id of the
+   * client. The client and server state id are given by client side and server
+   * side alignment context respectively. This can be a blocking call.
+   *
+   * @throws IOException
+   */
+  @Idempotent
+  @ReadOnly(activeOnly = true)
+  void msync() throws IOException;
 }

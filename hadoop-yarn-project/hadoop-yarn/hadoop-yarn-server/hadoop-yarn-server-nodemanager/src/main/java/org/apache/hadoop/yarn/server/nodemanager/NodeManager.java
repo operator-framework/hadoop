@@ -25,8 +25,10 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+import org.apache.hadoop.metrics2.util.MBeans;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.service.CompositeService;
 import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.GenericOptionsParser;
@@ -87,8 +89,8 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public class NodeManager extends CompositeService 
-    implements EventHandler<NodeManagerEvent> {
+public class NodeManager extends CompositeService
+    implements EventHandler<NodeManagerEvent>, NodeManagerMXBean {
 
   /**
    * Node manager return status codes.
@@ -348,6 +350,7 @@ public class NodeManager extends CompositeService
 
   @Override
   protected void serviceInit(Configuration conf) throws Exception {
+    UserGroupInformation.setConfiguration(conf);
     rmWorkPreservingRestartEnabled = conf.getBoolean(YarnConfiguration
             .RM_WORK_PRESERVING_RECOVERY_ENABLED,
         YarnConfiguration.DEFAULT_RM_WORK_PRESERVING_RECOVERY_ENABLED);
@@ -470,6 +473,8 @@ public class NodeManager extends CompositeService
       throw new YarnRuntimeException("Failed NodeManager login", e);
     }
 
+    registerMXBean();
+
     super.serviceInit(conf);
     // TODO add local dirs to del
   }
@@ -484,9 +489,11 @@ public class NodeManager extends CompositeService
       DefaultMetricsSystem.shutdown();
 
       // Cleanup ResourcePluginManager
-      ResourcePluginManager rpm = context.getResourcePluginManager();
-      if (rpm != null) {
-        rpm.cleanup();
+      if (null != context) {
+        ResourcePluginManager rpm = context.getResourcePluginManager();
+        if (rpm != null) {
+          rpm.cleanup();
+        }
       }
     } finally {
       // YARN-3641: NM's services stop get failed shouldn't block the
@@ -946,6 +953,18 @@ public class NodeManager extends CompositeService
     default:
       LOG.warn("Invalid shutdown event " + event.getType() + ". Ignoring.");
     }
+  }
+
+  /**
+   * Register NodeManagerMXBean.
+   */
+  private void registerMXBean() {
+    MBeans.register("NodeManager", "NodeManager", this);
+  }
+
+  @Override
+  public boolean isSecurityEnabled() {
+    return UserGroupInformation.isSecurityEnabled();
   }
   
   // For testing

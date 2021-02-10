@@ -68,6 +68,11 @@ public interface HdfsClientConfigKeys {
   String PREFIX = "dfs.client.";
   String  DFS_NAMESERVICES = "dfs.nameservices";
   String DFS_NAMENODE_RPC_ADDRESS_KEY = "dfs.namenode.rpc-address";
+
+  String DFS_NAMENODE_RPC_ADDRESS_AUXILIARY_SUFFIX = "auxiliary-ports";
+  String DFS_NAMENODE_RPC_ADDRESS_AUXILIARY_KEY = DFS_NAMENODE_RPC_ADDRESS_KEY
+      + "." + DFS_NAMENODE_RPC_ADDRESS_AUXILIARY_SUFFIX;
+
   int     DFS_NAMENODE_HTTP_PORT_DEFAULT = 9870;
   String  DFS_NAMENODE_HTTP_ADDRESS_KEY = "dfs.namenode.http-address";
   int     DFS_NAMENODE_HTTPS_PORT_DEFAULT = 9871;
@@ -144,6 +149,11 @@ public interface HdfsClientConfigKeys {
   long    DFS_CLIENT_KEY_PROVIDER_CACHE_EXPIRY_DEFAULT =
               TimeUnit.DAYS.toMillis(10); // 10 days
 
+  // refreshing LocatedBlocks period. A value of 0 disables the feature.
+  String  DFS_CLIENT_REFRESH_READ_BLOCK_LOCATIONS_MS_KEY =
+      "dfs.client.refresh.read-block-locations.ms";
+  long DFS_CLIENT_REFRESH_READ_BLOCK_LOCATIONS_MS_DEFAULT = 0L;
+
   String  DFS_DATANODE_KERBEROS_PRINCIPAL_KEY =
       "dfs.datanode.kerberos.principal";
   String  DFS_DATANODE_READAHEAD_BYTES_KEY = "dfs.datanode.readahead.bytes";
@@ -151,6 +161,9 @@ public interface HdfsClientConfigKeys {
 
   String DFS_ENCRYPT_DATA_TRANSFER_CIPHER_SUITES_KEY =
       "dfs.encrypt.data.transfer.cipher.suites";
+
+  String DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_NEW_QOP_KEY =
+      "dfs.encrypt.data.overwrite.downstream.new.qop";
 
   String DFS_DATA_TRANSFER_PROTECTION_KEY = "dfs.data.transfer.protection";
   String DFS_DATA_TRANSFER_PROTECTION_DEFAULT = "";
@@ -183,6 +196,9 @@ public interface HdfsClientConfigKeys {
   String DFS_NAMENODE_SNAPSHOT_CAPTURE_OPENFILES =
       "dfs.namenode.snapshot.capture.openfiles";
   boolean DFS_NAMENODE_SNAPSHOT_CAPTURE_OPENFILES_DEFAULT = false;
+
+  String DFS_LEASE_HARDLIMIT_KEY = "dfs.namenode.lease-hard-limit-sec";
+  long DFS_LEASE_HARDLIMIT_DEFAULT = 20 * 60;
 
   /**
    * These are deprecated config keys to client code.

@@ -69,6 +69,7 @@ import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Multimap;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hdfs.server.namenode.ImageServlet;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -559,6 +560,11 @@ public class MiniDFSCluster implements AutoCloseable {
     public void setDnArgs(String ... args) {
       dnArgs = args;
     }
+
+    public DataNode getDatanode() {
+      return datanode;
+    }
+
   }
 
   private Configuration conf;
@@ -963,6 +969,8 @@ public class MiniDFSCluster implements AutoCloseable {
         }
        copyKeys(conf, nnConf, nnInfo.nameserviceId, nnInfo.nnId);
       }
+      nn.nameNode.getHttpServer()
+          .setAttribute(ImageServlet.RECENT_IMAGE_CHECK_ENABLED, false);
     }
   }
 
@@ -1348,6 +1356,21 @@ public class MiniDFSCluster implements AutoCloseable {
   public URI getURI(int nnIndex) {
     String hostPort =
         getNN(nnIndex).nameNode.getNameNodeAddressHostPortString();
+    URI uri = null;
+    try {
+      uri = new URI("hdfs://" + hostPort);
+    } catch (URISyntaxException e) {
+      NameNode.LOG.warn("unexpected URISyntaxException", e);
+    }
+    return uri;
+  }
+
+  URI getURIForAuxiliaryPort(int nnIndex) {
+    String hostPort =
+        getNN(nnIndex).nameNode.getNNAuxiliaryRpcAddress();
+    if (hostPort == null) {
+      throw new RuntimeException("No auxiliary port found");
+    }
     URI uri = null;
     try {
       uri = new URI("hdfs://" + hostPort);
@@ -1956,6 +1979,14 @@ public class MiniDFSCluster implements AutoCloseable {
     checkSingleNameNode();
     return getNameNodePort(0);
   }
+
+  /**
+   * Get the auxiliary port of NameNode, NameNode specified by index.
+   */
+  public int getNameNodeAuxiliaryPort() {
+    checkSingleNameNode();
+    return getNameNodeAuxiliaryPort(0);
+  }
     
   /**
    * Gets the rpc port used by the NameNode at the given index, because the
@@ -1963,6 +1994,22 @@ public class MiniDFSCluster implements AutoCloseable {
    */     
   public int getNameNodePort(int nnIndex) {
     return getNN(nnIndex).nameNode.getNameNodeAddress().getPort();
+  }
+
+  /**
+   * Gets the rpc port used by the NameNode at the given index, if the
+   * NameNode has multiple auxiliary ports configured, a arbitrary
+   * one is returned.
+   */
+  public int getNameNodeAuxiliaryPort(int nnIndex) {
+    Set<InetSocketAddress> allAuxiliaryAddresses =
+        getNN(nnIndex).nameNode.getAuxiliaryNameNodeAddresses();
+    if (allAuxiliaryAddresses.isEmpty()) {
+      return -1;
+    } else {
+      InetSocketAddress addr = allAuxiliaryAddresses.iterator().next();
+      return addr.getPort();
+    }
   }
 
   /**
@@ -2128,6 +2175,8 @@ public class MiniDFSCluster implements AutoCloseable {
     }
 
     NameNode nn = NameNode.createNameNode(args, info.conf);
+    nn.getHttpServer()
+        .setAttribute(ImageServlet.RECENT_IMAGE_CHECK_ENABLED, false);
     info.nameNode = nn;
     info.setStartOpt(startOpt);
     if (waitActive) {
@@ -2345,14 +2394,19 @@ public class MiniDFSCluster implements AutoCloseable {
     return restartDataNode(dnprop, false);
   }
 
-  private void waitDataNodeFullyStarted(final DataNode dn)
+  public void waitDatanodeFullyStarted(DataNode dn, int timeout)
       throws TimeoutException, InterruptedException {
     GenericTestUtils.waitFor(new Supplier<Boolean>() {
       @Override
       public Boolean get() {
         return dn.isDatanodeFullyStarted();
       }
-    }, 100, 60000);
+    }, 100, timeout);
+  }
+
+  private void waitDataNodeFullyStarted(final DataNode dn)
+      throws TimeoutException, InterruptedException {
+    waitDatanodeFullyStarted(dn, 60000);
   }
 
   /**
@@ -2521,12 +2575,24 @@ public class MiniDFSCluster implements AutoCloseable {
     return getFileSystem(0);
   }
 
+  public DistributedFileSystem getFileSystemFromAuxiliaryPort()
+      throws IOException {
+    checkSingleNameNode();
+    return getFileSystemFromAuxiliaryPort(0);
+  }
+
   /**
    * Get a client handle to the DFS cluster for the namenode at given index.
    */
   public DistributedFileSystem getFileSystem(int nnIndex) throws IOException {
     return (DistributedFileSystem) addFileSystem(FileSystem.get(getURI(nnIndex),
         getNN(nnIndex).conf));
+  }
+
+  public DistributedFileSystem getFileSystemFromAuxiliaryPort(int nnIndex)
+      throws IOException {
+    return (DistributedFileSystem) addFileSystem(FileSystem.get(
+        getURIForAuxiliaryPort(nnIndex), getNN(nnIndex).conf));
   }
 
   /**
@@ -2576,8 +2642,20 @@ public class MiniDFSCluster implements AutoCloseable {
     getNameNode(nnIndex).getRpcServer().transitionToStandby(
         new StateChangeRequestInfo(RequestSource.REQUEST_BY_USER_FORCED));
   }
-  
-  
+
+  public void transitionToObserver(int nnIndex) throws IOException,
+      ServiceFailedException {
+    getNameNode(nnIndex).getRpcServer().transitionToObserver(
+        new StateChangeRequestInfo(RequestSource.REQUEST_BY_USER_FORCED));
+  }
+
+  public void rollEditLogAndTail(int nnIndex) throws Exception {
+    getNameNode(nnIndex).getRpcServer().rollEditLog();
+    for (int i = 2; i < getNumNameNodes(); i++) {
+      getNameNode(i).getNamesystem().getEditLogTailer().doTailEdits();
+    }
+  }
+
   public void triggerBlockReports()
       throws IOException {
     for (DataNode dn : getDataNodes()) {

@@ -20,6 +20,7 @@ package org.apache.hadoop.yarn.server.nodemanager.containermanager.launcher;
 
 import static org.apache.hadoop.fs.CreateFlag.CREATE;
 import static org.apache.hadoop.fs.CreateFlag.OVERWRITE;
+import static org.apache.hadoop.yarn.server.nodemanager.ContainerExecutor.TOKEN_FILE_NAME_FMT;
 
 import org.apache.hadoop.yarn.server.nodemanager.executor.DeletionAsUserContext;
 import org.slf4j.Logger;
@@ -45,6 +46,8 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -137,6 +140,8 @@ public class ContainerLaunch implements Callable<Integer> {
   protected Path pidFilePath = null;
 
   protected final LocalDirsHandlerService dirsHandler;
+
+  private final Lock containerExecLock = new ReentrantLock();
 
   public ContainerLaunch(Context context, Configuration configuration,
       Dispatcher dispatcher, ContainerExecutor exec, Application app,
@@ -235,8 +240,7 @@ public class ContainerLaunch implements Callable<Integer> {
               + CONTAINER_SCRIPT);
       Path nmPrivateTokensPath = dirsHandler.getLocalPathForWrite(
           getContainerPrivateDir(appIdStr, containerIdStr) + Path.SEPARATOR
-              + String.format(ContainerLocalizer.TOKEN_FILE_NAME_FMT,
-              containerIdStr));
+              + String.format(TOKEN_FILE_NAME_FMT, containerIdStr));
       Path nmPrivateClasspathJarDir = dirsHandler.getLocalPathForWrite(
           getContainerPrivateDir(appIdStr, containerIdStr));
 
@@ -249,12 +253,13 @@ public class ContainerLaunch implements Callable<Integer> {
       // accessible by users
       pidFilePath = dirsHandler.getLocalPathForWrite(pidFileSubpath);
       List<String> localDirs = dirsHandler.getLocalDirs();
+      List<String> localDirsForRead = dirsHandler.getLocalDirsForRead();
       List<String> logDirs = dirsHandler.getLogDirs();
-      List<String> filecacheDirs = getNMFilecacheDirs(localDirs);
+      List<String> filecacheDirs = getNMFilecacheDirs(localDirsForRead);
       List<String> userLocalDirs = getUserLocalDirs(localDirs);
       List<String> containerLocalDirs = getContainerLocalDirs(localDirs);
       List<String> containerLogDirs = getContainerLogDirs(logDirs);
-      List<String> userFilecacheDirs = getUserFilecacheDirs(localDirs);
+      List<String> userFilecacheDirs = getUserFilecacheDirs(localDirsForRead);
       List<String> applicationLocalDirs = getApplicationLocalDirs(localDirs,
           appIdStr);
 
@@ -491,7 +496,12 @@ public class ContainerLaunch implements Callable<Integer> {
       throws IOException, ConfigurationException {
     int launchPrep = prepareForLaunch(ctx);
     if (launchPrep == 0) {
-      return exec.launchContainer(ctx);
+      containerExecLock.lock();
+      try {
+        return exec.launchContainer(ctx);
+      } finally {
+        containerExecLock.unlock();
+      }
     }
     return launchPrep;
   }
@@ -501,7 +511,12 @@ public class ContainerLaunch implements Callable<Integer> {
       throws IOException, ConfigurationException {
     int launchPrep = prepareForLaunch(ctx);
     if (launchPrep == 0) {
-      return exec.relaunchContainer(ctx);
+      containerExecLock.lock();
+      try {
+        return exec.relaunchContainer(ctx);
+      } finally {
+        containerExecLock.unlock();
+      }
     }
     return launchPrep;
   }
@@ -563,14 +578,10 @@ public class ContainerLaunch implements Callable<Integer> {
         || exitCode == ExitCode.TERMINATED.getExitCode()) {
       // If the process was killed, Send container_cleanedup_after_kill and
       // just break out of this method.
-
-      // If Container was killed before starting... NO need to do this.
-      if (!killedBeforeStart) {
-        dispatcher.getEventHandler().handle(
-            new ContainerExitEvent(containerId,
-                ContainerEventType.CONTAINER_KILLED_ON_REQUEST, exitCode,
-                diagnosticInfo.toString()));
-      }
+      dispatcher.getEventHandler().handle(
+          new ContainerExitEvent(containerId,
+              ContainerEventType.CONTAINER_KILLED_ON_REQUEST, exitCode,
+              diagnosticInfo.toString()));
     } else if (exitCode != 0) {
       handleContainerExitWithFailure(containerId, exitCode, containerLogDir,
           diagnosticInfo);
@@ -816,18 +827,22 @@ public class ContainerLaunch implements Callable<Integer> {
         lfs.delete(pidFilePath.suffix(EXIT_CODE_FILE_SUFFIX), false);
       }
     }
-
-    // Reap the container
-    boolean result = exec.reapContainer(
-        new ContainerReapContext.Builder()
-            .setContainer(container)
-            .setUser(container.getUser())
-            .build());
-    if (!result) {
-      throw new IOException("Reap container failed for container "
-          + containerIdStr);
+    containerExecLock.lock();
+    try {
+      // Reap the container
+      boolean result = exec.reapContainer(
+          new ContainerReapContext.Builder()
+              .setContainer(container)
+              .setUser(container.getUser())
+              .build());
+      if (!result) {
+        throw new IOException("Reap container failed for container "
+            + containerIdStr);
+      }
+      cleanupContainerFiles(getContainerWorkDir());
+    } finally {
+      containerExecLock.unlock();
     }
-    cleanupContainerFiles(getContainerWorkDir());
   }
 
   /**
@@ -1389,7 +1404,7 @@ public class ContainerLaunch implements Callable<Integer> {
 
     @Override
     protected void link(Path src, Path dst) throws IOException {
-      line("ln -sf \"", src.toUri().getPath(), "\" \"", dst.toString(), "\"");
+      line("ln -sf -- \"", src.toUri().getPath(), "\" \"", dst.toString(), "\"");
     }
 
     @Override
@@ -1878,6 +1893,13 @@ public class ContainerLaunch implements Callable<Integer> {
     deleteAsUser(new Path(containerWorkDir, CONTAINER_SCRIPT));
     // delete TokensPath
     deleteAsUser(new Path(containerWorkDir, FINAL_CONTAINER_TOKENS_FILE));
+
+    // delete symlinks because launch script will create symlinks again
+    try {
+      exec.cleanupBeforeRelaunch(container);
+    } catch (IOException | InterruptedException e) {
+      LOG.warn("{} exec failed to cleanup", container.getContainerId(), e);
+    }
   }
 
   private void deleteAsUser(Path path) {

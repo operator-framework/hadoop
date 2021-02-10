@@ -15,7 +15,7 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
-                      http://maven.apache.org/xsd/maven-4.0.0.xsd">
+                      https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>org.apache.hadoop</groupId>
@@ -31,11 +31,11 @@
 
   <properties>
     <!-- Set the Release year during release -->
-    <release-year>2018</release-year>
+    <release-year>2020</release-year>
 
     <failIfNoTests>false</failIfNoTests>
     <maven.test.redirectTestOutputToFile>true</maven.test.redirectTestOutputToFile>
-    <jetty.version>9.3.19.v20170502</jetty.version>
+    <jetty.version>9.4.20.v20190813</jetty.version>
     <test.exclude>_</test.exclude>
     <test.exclude.pattern>_</test.exclude.pattern>
 
@@ -50,7 +50,7 @@
 
     <kafka.version>0.8.2.1</kafka.version>
 
-    <hadoop.assemblies.version>${project.version}</hadoop.assemblies.version>
+    <hadoop.assemblies.version>3.1.4</hadoop.assemblies.version>
     <commons-daemon.version>1.0.13</commons-daemon.version>
 
     <test.build.dir>${project.build.directory}/test-dir</test.build.dir>
@@ -69,7 +69,8 @@
 
     <!-- jackson versions -->
     <jackson.version>1.9.13</jackson.version>
-    <jackson2.version>2.7.8</jackson2.version>
+    <jackson2.version>2.9.10</jackson2.version>
+    <jackson2.databind.version>2.9.10.4</jackson2.databind.version>
 
     <!-- SLF4J version -->
     <slf4j.version>1.7.25</slf4j.version>
@@ -82,13 +83,17 @@
     <protobuf.version>2.5.0</protobuf.version>
     <protoc.path>${env.HADOOP_PROTOC_PATH}</protoc.path>
 
-    <zookeeper.version>3.4.9</zookeeper.version>
-    <curator.version>2.12.0</curator.version>
-    <findbugs.version>3.0.0</findbugs.version>
+    <!-- Maven protoc compiler -->
+    <protobuf-maven-plugin.version>0.5.1</protobuf-maven-plugin.version>
+    <os-maven-plugin.version>1.5.0.Final</os-maven-plugin.version>
+
+    <zookeeper.version>3.4.13</zookeeper.version>
+    <curator.version>2.13.0</curator.version>
+    <findbugs.version>3.0.5</findbugs.version>
     <spotbugs.version>3.1.0-RC1</spotbugs.version>
     <dnsjava.version>2.1.7</dnsjava.version>
 
-    <guava.version>11.0.2</guava.version>
+    <guava.version>27.0-jre</guava.version>
     <guice.version>4.0</guice.version>
     <joda-time.version>2.9.9</joda-time.version>
 
@@ -115,15 +120,15 @@
 
     <!-- Plugin versions and config -->
     <maven-surefire-plugin.argLine>-Xmx2048m -XX:+HeapDumpOnOutOfMemoryError</maven-surefire-plugin.argLine>
-    <maven-surefire-plugin.version>2.21.0</maven-surefire-plugin.version>
+    <maven-surefire-plugin.version>3.0.0-M1</maven-surefire-plugin.version>
     <maven-surefire-report-plugin.version>${maven-surefire-plugin.version}</maven-surefire-report-plugin.version>
     <maven-failsafe-plugin.version>${maven-surefire-plugin.version}</maven-failsafe-plugin.version>
 
-    <maven-clean-plugin.version>2.5</maven-clean-plugin.version>
+    <maven-clean-plugin.version>3.1.0</maven-clean-plugin.version>
     <maven-compiler-plugin.version>3.1</maven-compiler-plugin.version>
     <maven-install-plugin.version>2.5.1</maven-install-plugin.version>
     <maven-resources-plugin.version>2.6</maven-resources-plugin.version>
-    <maven-shade-plugin.version>2.4.3</maven-shade-plugin.version>
+    <maven-shade-plugin.version>3.2.0</maven-shade-plugin.version>
     <maven-jar-plugin.version>2.5</maven-jar-plugin.version>
     <maven-war-plugin.version>3.1.0</maven-war-plugin.version>
     <maven-source-plugin.version>2.3</maven-source-plugin.version>
@@ -598,7 +603,7 @@
       <dependency>
         <groupId>org.apache.commons</groupId>
         <artifactId>commons-compress</artifactId>
-        <version>1.4.1</version>
+        <version>1.19</version>
       </dependency>
       <dependency>
         <groupId>org.apache.commons</groupId>
@@ -680,7 +685,7 @@
       <dependency>
         <groupId>org.codehaus.plexus</groupId>
         <artifactId>plexus-utils</artifactId>
-        <version>2.0.5</version>
+        <version>3.1.0</version>
       </dependency>
       <dependency>
         <groupId>org.codehaus.plexus</groupId>
@@ -782,13 +787,13 @@
       <dependency>
         <groupId>io.netty</groupId>
         <artifactId>netty</artifactId>
-        <version>3.10.5.Final</version>
+        <version>3.10.6.Final</version>
       </dependency>
 
       <dependency>
         <groupId>io.netty</groupId>
         <artifactId>netty-all</artifactId>
-        <version>4.0.52.Final</version>
+        <version>4.1.48.Final</version>
       </dependency>
 
       <dependency>
@@ -907,7 +912,7 @@
       <dependency>
         <groupId>commons-beanutils</groupId>
         <artifactId>commons-beanutils</artifactId>
-        <version>1.9.3</version>
+        <version>1.9.4</version>
       </dependency>
       <dependency>
         <groupId>org.apache.commons</groupId>
@@ -983,7 +988,7 @@
       <dependency>
         <groupId>com.fasterxml.jackson.core</groupId>
         <artifactId>jackson-databind</artifactId>
-        <version>${jackson2.version}</version>
+        <version>${jackson2.databind.version}</version>
       </dependency>
       <dependency>
         <groupId>com.fasterxml.jackson.core</groupId>
@@ -1054,7 +1059,7 @@
       <dependency>
         <groupId>com.jcraft</groupId>
         <artifactId>jsch</artifactId>
-        <version>0.1.54</version>
+        <version>0.1.55</version>
       </dependency>
       <dependency>
         <groupId>org.apache.htrace</groupId>
@@ -1139,7 +1144,7 @@
       <dependency>
         <groupId>com.google.code.findbugs</groupId>
         <artifactId>jsr305</artifactId>
-        <version>${findbugs.version}</version>
+        <version>3.0.2</version>
       </dependency>
       <dependency>
         <groupId>javax.xml.bind</groupId>
@@ -1194,7 +1199,7 @@
       <dependency>
         <groupId>com.aliyun.oss</groupId>
         <artifactId>aliyun-sdk-oss</artifactId>
-        <version>2.8.3</version>
+        <version>3.4.1</version>
         <exclusions>
           <exclusion>
             <groupId>org.apache.httpcomponents</groupId>
@@ -1243,7 +1248,7 @@
       <dependency>
           <groupId>com.nimbusds</groupId>
           <artifactId>nimbus-jose-jwt</artifactId>
-          <version>4.41.1</version>
+          <version>7.9</version>
           <scope>compile</scope>
           <exclusions>
           <exclusion>
@@ -1535,9 +1540,56 @@
           <artifactId>hadoop-maven-plugins</artifactId>
           <version>${project.version}</version>
         </plugin>
+        <plugin>
+          <groupId>org.xolstice.maven.plugins</groupId>
+          <artifactId>protobuf-maven-plugin</artifactId>
+          <version>${protobuf-maven-plugin.version}</version>
+          <extensions>true</extensions>
+          <configuration>
+            <protocArtifact>
+              com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}
+            </protocArtifact>
+            <attachProtoSources>false</attachProtoSources>
+          </configuration>
+          <executions>
+            <execution>
+              <id>src-compile-protoc</id>
+              <phase>generate-sources</phase>
+              <goals>
+                <goal>compile</goal>
+              </goals>
+              <configuration>
+                <includeDependenciesInDescriptorSet>false</includeDependenciesInDescriptorSet>
+                <protoSourceRoot>${basedir}/src/main/proto</protoSourceRoot>
+                <outputDirectory>${project.build.directory}/generated-sources/java</outputDirectory>
+                <clearOutputDirectory>false</clearOutputDirectory>
+                <skip>true</skip>
+              </configuration>
+            </execution>
+            <execution>
+              <id>src-test-compile-protoc</id>
+              <phase>generate-test-sources</phase>
+              <goals>
+                <goal>test-compile</goal>
+              </goals>
+              <configuration>
+                <protoTestSourceRoot>${basedir}/src/test/proto</protoTestSourceRoot>
+                <outputDirectory>${project.build.directory}/generated-test-sources/java</outputDirectory>
+                <clearOutputDirectory>false</clearOutputDirectory>
+                <skip>true</skip>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin>
       </plugins>
     </pluginManagement>
-
+    <extensions>
+      <extension>
+        <groupId>kr.motd.maven</groupId>
+        <artifactId>os-maven-plugin</artifactId>
+        <version>${os-maven-plugin.version}</version>
+      </extension>
+    </extensions>
     <plugins>
       <plugin>
         <artifactId>maven-clean-plugin</artifactId>
@@ -1914,10 +1966,5 @@
   </profiles>
 
   <repositories>
-    <repository>
-      <id>dynamodb-local-oregon</id>
-      <name>DynamoDB Local Release Repository</name>
-      <url>https://s3-us-west-2.amazonaws.com/dynamodb-local/release</url>
-    </repository>
   </repositories>
 </project>

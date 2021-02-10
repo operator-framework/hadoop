@@ -104,8 +104,7 @@ int launch_docker_container_as_user(const char * user, const char *app_id,
                               const char *script_name, const char *cred_file,
                               const char *pid_file, char* const* local_dirs,
                               char* const* log_dirs,
-                              const char *command_file,const char *resources_key,
-                              char* const* resources_values);
+                              const char *command_file);
 
 /*
  * Function used to launch a container as the provided user. It does the following :
@@ -272,8 +271,7 @@ int run_docker(const char *command_file);
 /**
  * Run a docker command without a command file
  */
-int exec_docker_command(char *docker_command, char **argv,
-    int argc, int optind);
+int exec_docker_command(char *docker_command, char **argv, int argc);
 
 /*
  * Compile the regex_str and determine if the input string matches.
@@ -293,3 +291,8 @@ struct configuration* get_cfg();
  * Flatten docker launch command
  */
 char* flatten(char **args);
+
+/**
+ * Remove docker container
+ */
+int remove_docker_container(char **argv, int argc);

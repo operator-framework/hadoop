@@ -64,10 +64,9 @@ class CGroupsHandlerImpl implements CGroupsHandler {
   private static final String MTAB_FILE = "/proc/mounts";
   private static final String CGROUPS_FSTYPE = "cgroup";
 
-  private String mtabFile;
+  private final String mtabFile;
   private final String cGroupPrefix;
-  private final boolean enableCGroupMount;
-  private final String cGroupMountPath;
+  private final CGroupsMountConfig cGroupsMountConfig;
   private final long deleteCGroupTimeout;
   private final long deleteCGroupDelay;
   private Map<CGroupController, String> controllerPaths;
@@ -90,10 +89,7 @@ class CGroupsHandlerImpl implements CGroupsHandler {
     this.cGroupPrefix = conf.get(YarnConfiguration.
         NM_LINUX_CONTAINER_CGROUPS_HIERARCHY, "/hadoop-yarn")
         .replaceAll("^/", "").replaceAll("$/", "");
-    this.enableCGroupMount = conf.getBoolean(YarnConfiguration.
-        NM_LINUX_CONTAINER_CGROUPS_MOUNT, false);
-    this.cGroupMountPath = conf.get(YarnConfiguration.
-        NM_LINUX_CONTAINER_CGROUPS_MOUNT_PATH, null);
+    this.cGroupsMountConfig = new CGroupsMountConfig(conf);
     this.deleteCGroupTimeout = conf.getLong(
         YarnConfiguration.NM_LINUX_CONTAINER_CGROUPS_DELETE_TIMEOUT,
         YarnConfiguration.DEFAULT_NM_LINUX_CONTAINER_CGROUPS_DELETE_TIMEOUT) +
@@ -149,9 +145,9 @@ class CGroupsHandlerImpl implements CGroupsHandler {
     Map<String, Set<String>> newMtab = null;
     Map<CGroupController, String> cPaths;
     try {
-      if (this.cGroupMountPath != null && !this.enableCGroupMount) {
+      if (this.cGroupsMountConfig.mountDisabledButMountPathDefined()) {
         newMtab = ResourceHandlerModule.
-            parseConfiguredCGroupPath(this.cGroupMountPath);
+            parseConfiguredCGroupPath(this.cGroupsMountConfig.getMountPath());
       }
 
       if (newMtab == null) {
@@ -281,14 +277,10 @@ class CGroupsHandlerImpl implements CGroupsHandler {
 
   private void mountCGroupController(CGroupController controller)
       throws ResourceHandlerException {
-    if (cGroupMountPath == null) {
-      throw new ResourceHandlerException(
-          String.format("Cgroups mount path not specified in %s.",
-              YarnConfiguration.NM_LINUX_CONTAINER_CGROUPS_MOUNT_PATH));
-    }
     String existingMountPath = getControllerPath(controller);
     String requestedMountPath =
-        new File(cGroupMountPath, controller.getName()).getAbsolutePath();
+        new File(cGroupsMountConfig.getMountPath(),
+            controller.getName()).getAbsolutePath();
 
     if (existingMountPath == null ||
         !requestedMountPath.equals(existingMountPath)) {
@@ -367,7 +359,8 @@ class CGroupsHandlerImpl implements CGroupsHandler {
   @Override
   public void initializeCGroupController(CGroupController controller) throws
       ResourceHandlerException {
-    if (enableCGroupMount) {
+    if (this.cGroupsMountConfig.isMountEnabled() &&
+        cGroupsMountConfig.ensureMountPathIsDefined()) {
       // We have a controller that needs to be mounted
       mountCGroupController(controller);
     }
@@ -504,23 +497,29 @@ class CGroupsHandlerImpl implements CGroupsHandler {
   private boolean checkAndDeleteCgroup(File cgf) throws InterruptedException {
     boolean deleted = false;
     // FileInputStream in = null;
-    try (FileInputStream in = new FileInputStream(cgf + "/tasks")) {
-      if (in.read() == -1) {
+    if ( cgf.exists() ) {
+      try (FileInputStream in = new FileInputStream(cgf + "/tasks")) {
+        if (in.read() == -1) {
         /*
          * "tasks" file is empty, sleep a bit more and then try to delete the
          * cgroup. Some versions of linux will occasionally panic due to a race
          * condition in this area, hence the paranoia.
          */
-        Thread.sleep(deleteCGroupDelay);
-        deleted = cgf.delete();
-        if (!deleted) {
-          LOG.warn("Failed attempt to delete cgroup: " + cgf);
+          Thread.sleep(deleteCGroupDelay);
+          deleted = cgf.delete();
+          if (!deleted) {
+            LOG.warn("Failed attempt to delete cgroup: " + cgf);
+          }
+        } else{
+          logLineFromTasksFile(cgf);
         }
-      } else {
-        logLineFromTasksFile(cgf);
+      } catch (IOException e) {
+        LOG.warn("Failed to read cgroup tasks file. ", e);
       }
-    } catch (IOException e) {
-      LOG.warn("Failed to read cgroup tasks file. ", e);
+    } else {
+      LOG.info("Parent Cgroups directory {} does not exist. Skipping "
+          + "deletion", cgf.getPath());
+      deleted = true;
     }
     return deleted;
   }
@@ -609,6 +608,17 @@ class CGroupsHandlerImpl implements CGroupsHandler {
 
   @Override
   public String getCGroupMountPath() {
-    return cGroupMountPath;
+    return this.cGroupsMountConfig.getMountPath();
+  }
+
+  @Override
+  public String toString() {
+    return CGroupsHandlerImpl.class.getName() + "{" +
+        "mtabFile='" + mtabFile + '\'' +
+        ", cGroupPrefix='" + cGroupPrefix + '\'' +
+        ", cGroupsMountConfig=" + cGroupsMountConfig +
+        ", deleteCGroupTimeout=" + deleteCGroupTimeout +
+        ", deleteCGroupDelay=" + deleteCGroupDelay +
+        '}';
   }
 }

@@ -17,9 +17,11 @@
  */
 package org.apache.hadoop.hdfs.server.federation.resolver;
 
+import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.FEDERATION_MOUNT_TABLE_CACHE_ENABLE;
 import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.FEDERATION_MOUNT_TABLE_MAX_CACHE_SIZE;
 import static org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys.DFS_ROUTER_DEFAULT_NAMESERVICE;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -37,6 +39,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.server.federation.router.Router;
 import org.apache.hadoop.hdfs.server.federation.store.MountTableStore;
 import org.apache.hadoop.hdfs.server.federation.store.records.MountTable;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.Before;
 import org.junit.Test;
 import org.slf4j.Logger;
@@ -171,6 +174,31 @@ public class TestMountTableResolver {
     assertEquals("2->/tmp/tesfile1.txt",
         mountTable.getDestinationForPath("/readonly/tesfile1.txt").toString());
 
+  }
+
+  @Test
+  public void testDefaultNameServiceEnable() throws IOException {
+    assertTrue(mountTable.isDefaultNSEnable());
+    mountTable.setDefaultNameService("3");
+    mountTable.removeEntry("/");
+
+    assertEquals("3->/unknown",
+        mountTable.getDestinationForPath("/unknown").toString());
+
+    Map<String, String> map = getMountTableEntry("4", "/unknown");
+    mountTable.addEntry(MountTable.newInstance("/unknown", map));
+    mountTable.setDefaultNSEnable(false);
+    assertFalse(mountTable.isDefaultNSEnable());
+
+    assertEquals("4->/unknown",
+        mountTable.getDestinationForPath("/unknown").toString());
+    try {
+      mountTable.getDestinationForPath("/");
+      fail("The getDestinationForPath call should fail.");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains(
+          "the default nameservice is disabled to read or write", ioe);
+    }
   }
 
   private void compareLists(List<String> list1, String[] list2) {
@@ -470,6 +498,35 @@ public class TestMountTableResolver {
     mountTable.removeEntry("/testupdate");
     MountTable entry2 = mountTable.getMountPoint("/testupdate");
     assertNull(entry2);
+  }
+
+  @Test
+  public void testDisableLocalCache() throws IOException {
+    Configuration conf = new Configuration();
+    // Disable mount table cache
+    conf.setBoolean(FEDERATION_MOUNT_TABLE_CACHE_ENABLE, false);
+    conf.setStrings(DFS_ROUTER_DEFAULT_NAMESERVICE, "0");
+    MountTableResolver tmpMountTable = new MountTableResolver(conf);
+
+    // Root mount point
+    Map<String, String> map = getMountTableEntry("1", "/");
+    tmpMountTable.addEntry(MountTable.newInstance("/", map));
+
+    // /tmp
+    map = getMountTableEntry("2", "/tmp");
+    tmpMountTable.addEntry(MountTable.newInstance("/tmp", map));
+
+    // Check localCache is null
+    try {
+      tmpMountTable.getCacheSize();
+      fail("getCacheSize call should fail.");
+    } catch (IOException e) {
+      GenericTestUtils.assertExceptionContains("localCache is null", e);
+    }
+
+    // Check resolve path without cache
+    assertEquals("2->/tmp/tesfile1.txt",
+        tmpMountTable.getDestinationForPath("/tmp/tesfile1.txt").toString());
   }
 
   @Test

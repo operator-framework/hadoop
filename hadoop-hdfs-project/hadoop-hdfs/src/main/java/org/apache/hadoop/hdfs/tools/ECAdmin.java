@@ -26,6 +26,7 @@ import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.protocol.AddErasureCodingPolicyResponse;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyInfo;
+import org.apache.hadoop.hdfs.protocol.NoECPolicySetException;
 import org.apache.hadoop.hdfs.util.ECPolicyLoader;
 import org.apache.hadoop.io.erasurecode.ErasureCodeConstants;
 import org.apache.hadoop.tools.TableListing;
@@ -154,7 +155,7 @@ public class ECAdmin extends Configured implements Tool {
       listing.addRow("<file>",
           "The path of the xml file which defines the EC policies to add");
       return getShortUsage() + "\n" +
-          "Add a list of erasure coding policies.\n" +
+          "Add a list of user defined erasure coding policies.\n" +
           listing.toString();
     }
 
@@ -268,7 +269,7 @@ public class ECAdmin extends Configured implements Tool {
       TableListing listing = AdminHelper.getOptionDescriptionListing();
       listing.addRow("<policy>", "The name of the erasure coding policy");
       return getShortUsage() + "\n" +
-          "Remove an erasure coding policy.\n" +
+          "Remove an user defined erasure coding policy.\n" +
           listing.toString();
     }
 
@@ -424,6 +425,12 @@ public class ECAdmin extends Configured implements Tool {
               "non-empty directory will not automatically convert existing" +
               " files to replicated data.");
         }
+      } catch (NoECPolicySetException e) {
+        System.err.println(AdminHelper.prettifyException(e));
+        System.err.println("Use '-setPolicy -path <PATH> -replicate' to enforce"
+            + " default replication policy irrespective of EC policy"
+            + " defined on parent.");
+        return 2;
       } catch (Exception e) {
         System.err.println(AdminHelper.prettifyException(e));
         return 2;

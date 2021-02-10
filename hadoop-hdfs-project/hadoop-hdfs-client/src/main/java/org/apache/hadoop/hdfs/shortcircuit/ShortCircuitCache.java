@@ -26,7 +26,6 @@ import java.nio.MappedByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.NoSuchElementException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -109,13 +108,8 @@ public class ShortCircuitCache implements Closeable {
         int numDemoted = demoteOldEvictableMmaped(curMs);
         int numPurged = 0;
         Long evictionTimeNs;
-        while (true) {
-          Object eldestKey;
-          try {
-            eldestKey = evictable.firstKey();
-          } catch (NoSuchElementException e) {
-            break;
-          }
+        while (!evictable.isEmpty()) {
+          Object eldestKey = evictable.firstKey();
           evictionTimeNs = (Long)eldestKey;
           long evictionTimeMs =
               TimeUnit.MILLISECONDS.convert(evictionTimeNs, TimeUnit.NANOSECONDS);
@@ -493,13 +487,8 @@ public class ShortCircuitCache implements Closeable {
     boolean needMoreSpace = false;
     Long evictionTimeNs;
 
-    while (true) {
-      Object eldestKey;
-      try {
-        eldestKey = evictableMmapped.firstKey();
-      } catch (NoSuchElementException e) {
-        break;
-      }
+    while (!evictableMmapped.isEmpty()) {
+      Object eldestKey = evictableMmapped.firstKey();
       evictionTimeNs = (Long)eldestKey;
       long evictionTimeMs =
           TimeUnit.MILLISECONDS.convert(evictionTimeNs, TimeUnit.NANOSECONDS);
@@ -533,23 +522,15 @@ public class ShortCircuitCache implements Closeable {
     long now = Time.monotonicNow();
     demoteOldEvictableMmaped(now);
 
-    while (true) {
-      long evictableSize = evictable.size();
-      long evictableMmappedSize = evictableMmapped.size();
-      if (evictableSize + evictableMmappedSize <= maxTotalSize) {
-        return;
-      }
+    while (evictable.size() + evictableMmapped.size() > maxTotalSize) {
       ShortCircuitReplica replica;
-      try {
-        if (evictableSize == 0) {
-          replica = (ShortCircuitReplica)evictableMmapped.get(evictableMmapped
-              .firstKey());
-        } else {
-          replica = (ShortCircuitReplica)evictable.get(evictable.firstKey());
-        }
-      } catch (NoSuchElementException e) {
-        break;
+      if (evictable.isEmpty()) {
+        replica = (ShortCircuitReplica) evictableMmapped
+            .get(evictableMmapped.firstKey());
+      } else {
+        replica = (ShortCircuitReplica) evictable.get(evictable.firstKey());
       }
+
       if (LOG.isTraceEnabled()) {
         LOG.trace(this + ": trimEvictionMaps is purging " + replica +
             StringUtils.getStackTrace(Thread.currentThread()));
@@ -882,23 +863,13 @@ public class ShortCircuitCache implements Closeable {
       // Close and join cacheCleaner thread.
       IOUtilsClient.cleanup(LOG, cacheCleaner);
       // Purge all replicas.
-      while (true) {
-        Object eldestKey;
-        try {
-          eldestKey = evictable.firstKey();
-        } catch (NoSuchElementException e) {
-          break;
-        }
-        purge((ShortCircuitReplica)evictable.get(eldestKey));
+      while (!evictable.isEmpty()) {
+        Object eldestKey = evictable.firstKey();
+        purge((ShortCircuitReplica) evictable.get(eldestKey));
       }
-      while (true) {
-        Object eldestKey;
-        try {
-          eldestKey = evictableMmapped.firstKey();
-        } catch (NoSuchElementException e) {
-          break;
-        }
-        purge((ShortCircuitReplica)evictableMmapped.get(eldestKey));
+      while (!evictableMmapped.isEmpty()) {
+        Object eldestKey = evictableMmapped.firstKey();
+        purge((ShortCircuitReplica) evictableMmapped.get(eldestKey));
       }
     } finally {
       lock.unlock();

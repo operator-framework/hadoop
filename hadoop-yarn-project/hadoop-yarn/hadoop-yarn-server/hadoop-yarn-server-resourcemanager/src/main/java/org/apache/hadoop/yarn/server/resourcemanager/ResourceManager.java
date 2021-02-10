@@ -33,6 +33,7 @@ import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.metrics2.MetricsSystem;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.source.JvmMetrics;
+import org.apache.hadoop.metrics2.util.MBeans;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -95,11 +96,14 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.conf.YarnConfigurationStore;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.conf.YarnConfigurationStoreFactory;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.constraint.AllocationTagsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.constraint.MemoryPlacementConstraintManager;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.constraint.PlacementConstraintManagerService;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEventType;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.MutableConfScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.security.DelegationTokenRenewer;
 import org.apache.hadoop.yarn.server.resourcemanager.security.QueueACLsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.timelineservice.RMTimelineCollectorManager;
@@ -140,7 +144,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  */
 @SuppressWarnings("unchecked")
-public class ResourceManager extends CompositeService implements Recoverable {
+public class ResourceManager extends CompositeService
+        implements Recoverable, ResourceManagerMXBean {
 
   /**
    * Priority of the ResourceManager shutdown hook.
@@ -222,6 +227,10 @@ public class ResourceManager extends CompositeService implements Recoverable {
     return clusterTimeStamp;
   }
 
+  public String getRMLoginUser() {
+    return rmLoginUGI.getShortUserName();
+  }
+
   @VisibleForTesting
   protected static void setClusterTimeStamp(long timestamp) {
     clusterTimeStamp = timestamp;
@@ -242,6 +251,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
   @Override
   protected void serviceInit(Configuration conf) throws Exception {
     this.conf = conf;
+    UserGroupInformation.setConfiguration(conf);
     this.rmContext = new RMContextImpl();
     rmContext.setResourceManager(this);
 
@@ -332,6 +342,8 @@ public class ResourceManager extends CompositeService implements Recoverable {
         createSystemMetricsPublisher();
     addIfService(systemMetricsPublisher);
     rmContext.setSystemMetricsPublisher(systemMetricsPublisher);
+
+    registerMXBean();
 
     super.serviceInit(this.conf);
   }
@@ -571,12 +583,20 @@ public class ResourceManager extends CompositeService implements Recoverable {
   // sanity check for configurations
   protected static void validateConfigs(Configuration conf) {
     // validate max-attempts
-    int globalMaxAppAttempts =
-        conf.getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
+    int rmMaxAppAttempts = conf.getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
         YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS);
+    if (rmMaxAppAttempts <= 0) {
+      throw new YarnRuntimeException("Invalid rm am max attempts configuration"
+          + ", " + YarnConfiguration.RM_AM_MAX_ATTEMPTS
+          + "=" + rmMaxAppAttempts + ", it should be a positive integer.");
+    }
+    int globalMaxAppAttempts = conf.getInt(
+        YarnConfiguration.GLOBAL_RM_AM_MAX_ATTEMPTS,
+        conf.getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
+            YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS));
     if (globalMaxAppAttempts <= 0) {
       throw new YarnRuntimeException("Invalid global max attempts configuration"
-          + ", " + YarnConfiguration.RM_AM_MAX_ATTEMPTS
+          + ", " + YarnConfiguration.GLOBAL_RM_AM_MAX_ATTEMPTS
           + "=" + globalMaxAppAttempts + ", it should be a positive integer.");
     }
 
@@ -608,6 +628,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
     private ResourceManager rm;
     private boolean fromActive = false;
     private StandByTransitionRunnable standByTransitionRunnable;
+    private RMNMInfo rmnmInfo;
 
     RMActiveServices(ResourceManager rm) {
       super("RMActiveServices");
@@ -798,7 +819,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
         LOG.info("Initialized Federation membership.");
       }
 
-      new RMNMInfo(rmContext, scheduler);
+      rmnmInfo = new RMNMInfo(rmContext, scheduler);
 
       if (conf.getBoolean(YarnConfiguration.YARN_API_SERVICES_ENABLE,
           false)) {
@@ -867,6 +888,10 @@ public class ResourceManager extends CompositeService implements Recoverable {
       super.serviceStop();
 
       DefaultMetricsSystem.shutdown();
+      // unregister rmnmInfo bean
+      if (rmnmInfo != null) {
+        rmnmInfo.unregister();
+      }
       if (rmContext != null) {
         RMStateStore store = rmContext.getStateStore();
         try {
@@ -1124,9 +1149,9 @@ public class ResourceManager extends CompositeService implements Recoverable {
       params.put("com.sun.jersey.config.property.packages", apiPackages);
     }
 
-    Builder<ApplicationMasterService> builder = 
+    Builder<ResourceManager> builder =
         WebApps
-            .$for("cluster", ApplicationMasterService.class, masterService,
+            .$for("cluster", ResourceManager.class, this,
                 "ws")
             .with(conf)
             .withServlet("API-Service", "/app/*",
@@ -1164,8 +1189,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
 
       if (null == onDiskPath) {
         String war = "hadoop-yarn-ui-" + VersionInfo.getVersion() + ".war";
-        URLClassLoader cl = (URLClassLoader) ClassLoader.getSystemClassLoader();
-        URL url = cl.findResource(war);
+        URL url = getClass().getClassLoader().getResource(war);
 
         if (null == url) {
           onDiskPath = getWebAppsPath("ui2");
@@ -1478,6 +1502,8 @@ public class ResourceManager extends CompositeService implements Recoverable {
       if (argv.length >= 1) {
         if (argv[0].equals("-format-state-store")) {
           deleteRMStateStore(conf);
+        } else if (argv[0].equals("-format-conf-store")) {
+          deleteRMConfStore(conf);
         } else if (argv[0].equals("-remove-application-from-state-store")
             && argv.length == 2) {
           removeApplication(conf, argv[1]);
@@ -1570,6 +1596,44 @@ public class ResourceManager extends CompositeService implements Recoverable {
     }
   }
 
+  /**
+   * Deletes the YarnConfigurationStore.
+   *
+   * @param conf
+   * @throws Exception
+   */
+  @VisibleForTesting
+  static void deleteRMConfStore(Configuration conf) throws Exception {
+    ResourceManager rm = new ResourceManager();
+    rm.conf = conf;
+    ResourceScheduler scheduler = rm.createScheduler();
+    RMContextImpl rmContext = new RMContextImpl();
+    rmContext.setResourceManager(rm);
+
+    boolean isConfigurationMutable = false;
+    String confProviderStr = conf.get(
+        YarnConfiguration.SCHEDULER_CONFIGURATION_STORE_CLASS,
+        YarnConfiguration.DEFAULT_CONFIGURATION_STORE);
+    switch (confProviderStr) {
+    case YarnConfiguration.MEMORY_CONFIGURATION_STORE:
+    case YarnConfiguration.LEVELDB_CONFIGURATION_STORE:
+    case YarnConfiguration.ZK_CONFIGURATION_STORE:
+      isConfigurationMutable = true;
+      break;
+    default:
+    }
+
+    if (scheduler instanceof MutableConfScheduler && isConfigurationMutable) {
+      YarnConfigurationStore confStore = YarnConfigurationStoreFactory
+          .getStore(conf);
+      confStore.initialize(conf, conf, rmContext);
+      confStore.format();
+    } else {
+      System.out.println("Scheduler Configuration format only " +
+          "supported by MutableConfScheduler.");
+    }
+  }
+
   @VisibleForTesting
   static void removeApplication(Configuration conf, String applicationId)
       throws Exception {
@@ -1590,10 +1654,24 @@ public class ResourceManager extends CompositeService implements Recoverable {
   private static void printUsage(PrintStream out) {
     out.println("Usage: yarn resourcemanager [-format-state-store]");
     out.println("                            "
-        + "[-remove-application-from-state-store <appId>]" + "\n");
+        + "[-remove-application-from-state-store <appId>]");
+    out.println("                            "
+        + "[-format-conf-store]" + "\n");
   }
 
   protected RMAppLifetimeMonitor createRMAppLifetimeMonitor() {
     return new RMAppLifetimeMonitor(this.rmContext);
+  }
+
+  /**
+   * Register ResourceManagerMXBean.
+   */
+  private void registerMXBean() {
+    MBeans.register("ResourceManager", "ResourceManager", this);
+  }
+
+  @Override
+  public boolean isSecurityEnabled() {
+    return UserGroupInformation.isSecurityEnabled();
   }
 }

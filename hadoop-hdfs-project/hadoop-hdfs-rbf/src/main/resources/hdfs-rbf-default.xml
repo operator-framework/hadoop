@@ -32,6 +32,14 @@
   </property>
 
   <property>
+    <name>dfs.federation.router.default.nameservice.enable</name>
+    <value>true</value>
+    <description>
+      The default subcluster is enabled to read and write files.
+    </description>
+  </property>
+
+  <property>
     <name>dfs.federation.router.rpc.enable</name>
     <value>true</value>
     <description>
@@ -90,6 +98,14 @@
     <value>100</value>
     <description>
       The size of the queue for the number of readers for the router to handle RPC client requests.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.federation.router.connection.creator.queue-size</name>
+    <value>100</value>
+    <description>
+      Size of async connection creator queue.
     </description>
   </property>
 
@@ -219,14 +235,6 @@
     <value>true</value>
     <description>
       If the HTTP service to handle client requests in the router is enabled.
-    </description>
-  </property>
-
-  <property>
-    <name>dfs.federation.router.metrics.enable</name>
-    <value>true</value>
-    <description>
-      If the metrics service in the router is enabled.
     </description>
   </property>
 
@@ -390,6 +398,15 @@
     <description>
       Maximum number of mount table cache entries to have.
       By default, remove cache entries if we have more than 10k.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.federation.router.mount-table.cache.enable</name>
+    <value>true</value>
+    <description>
+      Set to true to enable mount table cache (Path to Remote Location cache).
+      Disabling the cache is recommended when a large amount of unique paths are queried.
     </description>
   </property>
 

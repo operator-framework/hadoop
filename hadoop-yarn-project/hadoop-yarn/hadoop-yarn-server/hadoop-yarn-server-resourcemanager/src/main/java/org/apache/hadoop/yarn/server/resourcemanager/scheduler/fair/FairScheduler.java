@@ -32,6 +32,7 @@ import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
+import org.apache.hadoop.yarn.api.records.NMToken;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.QueueACL;
 import org.apache.hadoop.yarn.api.records.QueueInfo;
@@ -102,6 +103,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
@@ -468,27 +470,40 @@ public class FairScheduler extends
       return;
     }
 
+    writeLock.lock();
     try {
-      writeLock.lock();
       RMApp rmApp = rmContext.getRMApps().get(applicationId);
+      // This will re-create the queue on restore, however this could fail if
+      // the config was changed.
       FSLeafQueue queue = assignToQueue(rmApp, queueName, user);
       if (queue == null) {
-        return;
+        if (!isAppRecovering) {
+          return;
+        }
+        // app is recovering we do not want to fail the app now as it was there
+        // before we started the recovery. Add it to the recovery queue:
+        // dynamic queue directly under root, no ACL needed (auto clean up)
+        queueName = "root.recovery";
+        queue = queueMgr.getLeafQueue(queueName, true);
       }
 
-      // Enforce ACLs
-      UserGroupInformation userUgi = UserGroupInformation.createRemoteUser(
-          user);
+      // Skip ACL check for recovering applications: they have been accepted
+      // in the queue already recovery should not break that.
+      if (!isAppRecovering) {
+        // Enforce ACLs
+        UserGroupInformation userUgi = UserGroupInformation.createRemoteUser(
+            user);
 
-      if (!queue.hasAccess(QueueACL.SUBMIT_APPLICATIONS, userUgi) && !queue
-          .hasAccess(QueueACL.ADMINISTER_QUEUE, userUgi)) {
-        String msg = "User " + userUgi.getUserName()
-            + " cannot submit applications to queue " + queue.getName()
-            + "(requested queuename is " + queueName + ")";
-        LOG.info(msg);
-        rmContext.getDispatcher().getEventHandler().handle(
-            new RMAppEvent(applicationId, RMAppEventType.APP_REJECTED, msg));
-        return;
+        if (!queue.hasAccess(QueueACL.SUBMIT_APPLICATIONS, userUgi) && !queue
+            .hasAccess(QueueACL.ADMINISTER_QUEUE, userUgi)) {
+          String msg = "User " + userUgi.getUserName()
+              + " cannot submit applications to queue " + queue.getName()
+              + "(requested queuename is " + queueName + ")";
+          LOG.info(msg);
+          rmContext.getDispatcher().getEventHandler().handle(
+              new RMAppEvent(applicationId, RMAppEventType.APP_REJECTED, msg));
+          return;
+        }
       }
 
       SchedulerApplication<FSAppAttempt> application =
@@ -912,12 +927,16 @@ public class FairScheduler extends
 
     Resource headroom = application.getHeadroom();
     application.setApplicationHeadroomForMetrics(headroom);
+
+    List<Container> previousAttemptContainers = application
+        .pullPreviousAttemptContainers();
+    List<NMToken> updatedNMTokens = application.pullUpdatedNMTokens();
     return new Allocation(newlyAllocatedContainers, headroom,
         preemptionContainerIds, null, null,
-        application.pullUpdatedNMTokens(), null, null,
+        updatedNMTokens, null, null,
         application.pullNewlyPromotedContainers(),
         application.pullNewlyDemotedContainers(),
-        application.pullPreviousAttemptContainers());
+        previousAttemptContainers);
   }
 
   @Override
@@ -940,15 +959,17 @@ public class FairScheduler extends
   @Deprecated
   void continuousSchedulingAttempt() throws InterruptedException {
     long start = getClock().getTime();
-    List<FSSchedulerNode> nodeIdList;
-    // Hold a lock to prevent comparator order changes due to changes of node
-    // unallocated resources
-    synchronized (this) {
-      nodeIdList = nodeTracker.sortedNodeList(nodeAvailableResourceComparator);
+    TreeSet<FSSchedulerNode> nodeIdSet;
+    // Hold a lock to prevent node changes as much as possible.
+    readLock.lock();
+    try {
+      nodeIdSet = nodeTracker.sortedNodeSet(nodeAvailableResourceComparator);
+    } finally {
+      readLock.unlock();
     }
 
     // iterate all nodes
-    for (FSSchedulerNode node : nodeIdList) {
+    for (FSSchedulerNode node : nodeIdSet) {
       try {
         if (Resources.fitsIn(minimumAllocation,
             node.getUnallocatedResource())) {

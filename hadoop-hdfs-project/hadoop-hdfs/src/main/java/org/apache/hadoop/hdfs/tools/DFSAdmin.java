@@ -94,6 +94,7 @@ import org.apache.hadoop.ipc.RefreshResponse;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.ipc.protocolPB.GenericRefreshProtocolClientSideTranslatorPB;
 import org.apache.hadoop.ipc.protocolPB.GenericRefreshProtocolPB;
+import org.apache.hadoop.ipc.StandbyException;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.RefreshUserMappingsProtocol;
 import org.apache.hadoop.security.SecurityUtil;
@@ -465,7 +466,7 @@ public class DFSAdmin extends FsShell {
     "\t[-evictWriters <datanode_host:ipc_port>]\n" +
     "\t[-getDatanodeInfo <datanode_host:ipc_port>]\n" +
     "\t[-metasave filename]\n" +
-    "\t[-triggerBlockReport [-incremental] <datanode_host:ipc_port>]\n" +
+    "\t[-triggerBlockReport [-incremental] <datanode_host:ipc_port> [-namenode <namenode_host:ipc_port>]]\n" +
     "\t[-listOpenFiles [-blockingDecommission] [-path <path>]]\n" +
     "\t[-help [cmd]]\n";
 
@@ -549,6 +550,11 @@ public class DFSAdmin extends FsShell {
         replicatedBlockStats.getMissingReplicaBlocks());
     System.out.println("\tMissing blocks (with replication factor 1): " +
         replicatedBlockStats.getMissingReplicationOneBlocks());
+    if (replicatedBlockStats.hasHighestPriorityLowRedundancyBlocks()) {
+      System.out.println("\tLow redundancy blocks with highest priority " +
+          "to recover: " +
+          replicatedBlockStats.getHighestPriorityLowRedundancyBlocks());
+    }
     System.out.println("\tPending deletion blocks: " +
         replicatedBlockStats.getPendingDeletionBlocks());
 
@@ -561,6 +567,11 @@ public class DFSAdmin extends FsShell {
         ecBlockGroupStats.getCorruptBlockGroups());
     System.out.println("\tMissing block groups: " +
         ecBlockGroupStats.getMissingBlockGroups());
+    if (ecBlockGroupStats.hasHighestPriorityLowRedundancyBlocks()) {
+      System.out.println("\tLow redundancy blocks with highest priority " +
+          "to recover: " +
+          ecBlockGroupStats.getHighestPriorityLowRedundancyBlocks());
+    }
     System.out.println("\tPending deletion blocks: " +
         ecBlockGroupStats.getPendingDeletionBlocks());
 
@@ -716,6 +727,13 @@ public class DFSAdmin extends FsShell {
     for (int j = 1; j < argv.length; j++) {
       args.add(argv[j]);
     }
+    // Block report to a specific namenode
+    InetSocketAddress namenodeAddr = null;
+    String nnHostPort = StringUtils.popOptionWithArgument("-namenode", args);
+    if (nnHostPort != null) {
+      namenodeAddr = NetUtils.createSocketAddr(nnHostPort);
+    }
+
     boolean incremental = StringUtils.popOption("-incremental", args);
     String hostPort = StringUtils.popFirstNonOption(args);
     if (hostPort == null) {
@@ -731,6 +749,7 @@ public class DFSAdmin extends FsShell {
     try {
       dnProxy.triggerBlockReport(
           new BlockReportOptions.Factory().
+              setNamenodeAddr(namenodeAddr).
               setIncremental(incremental).
               build());
     } catch (IOException e) {
@@ -739,7 +758,9 @@ public class DFSAdmin extends FsShell {
     }
     System.out.println("Triggering " +
         (incremental ? "an incremental " : "a full ") +
-        "block report on " + hostPort + ".");
+        "block report on " + hostPort +
+        (namenodeAddr == null ? "" : " to namenode " + nnHostPort) +
+        ".");
     return 0;
   }
 
@@ -1255,7 +1276,7 @@ public class DFSAdmin extends FsShell {
         + "\tbe used for checking if a datanode is alive.\n";
 
     String triggerBlockReport =
-      "-triggerBlockReport [-incremental] <datanode_host:ipc_port>\n"
+      "-triggerBlockReport [-incremental] <datanode_host:ipc_port> [-namenode <namenode_host:ipc_port>]\n"
         + "\tTrigger a block report for the datanode.\n"
         + "\tIf 'incremental' is specified, it will be an incremental\n"
         + "\tblock report; otherwise, it will be a full block report.\n";
@@ -1525,11 +1546,20 @@ public class DFSAdmin extends FsShell {
           nsId, ClientProtocol.class);
       List<IOException> exceptions = new ArrayList<>();
       for (ProxyAndInfo<ClientProtocol> proxy : proxies) {
-        try{
+        try {
           proxy.getProxy().metaSave(pathname);
           System.out.println("Created metasave file " + pathname
               + " in the log directory of namenode " + proxy.getAddress());
-        } catch (IOException ioe){
+        } catch (RemoteException re) {
+          Exception unwrapped =  re.unwrapRemoteException(
+              StandbyException.class);
+          if (unwrapped instanceof StandbyException) {
+            System.out.println("Skip Standby NameNode, since it cannot perform"
+                + " metasave operation");
+          } else {
+            throw re;
+          }
+        } catch (IOException ioe) {
           System.out.println("Created metasave file " + pathname
               + " in the log directory of namenode " + proxy.getAddress()
               + " failed");
@@ -2154,7 +2184,7 @@ public class DFSAdmin extends FsShell {
           + " [-getDatanodeInfo <datanode_host:ipc_port>]");
     } else if ("-triggerBlockReport".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
-          + " [-triggerBlockReport [-incremental] <datanode_host:ipc_port>]");
+          + " [-triggerBlockReport [-incremental] <datanode_host:ipc_port> [-namenode <namenode_host:ipc_port>]]");
     } else if ("-listOpenFiles".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
           + " [-listOpenFiles [-blockingDecommission] [-path <path>]]");
@@ -2312,7 +2342,7 @@ public class DFSAdmin extends FsShell {
         return exitCode;
       }
     } else if ("-triggerBlockReport".equals(cmd)) {
-      if ((argv.length != 2) && (argv.length != 3)) {
+      if ((argv.length < 2) || (argv.length > 5)) {
         printUsage(cmd);
         return exitCode;
       }

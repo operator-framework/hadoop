@@ -281,6 +281,8 @@ message ApplicationReportProto {
   optional string appNodeLabelExpression = 24;
   optional string amNodeLabelExpression = 25;
   repeated AppTimeoutsMapProto appTimeouts = 26;
+  optional int64 launchTime = 27;
+  optional int64 submitTime = 28;
 }
 
 message AppTimeoutsMapProto {

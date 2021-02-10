@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.server.resourcemanager.webapp;
 
 import com.google.inject.Inject;
+import org.apache.commons.lang.StringEscapeUtils;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.NodeState;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -167,7 +168,7 @@ class NodesPage extends RmView {
         nodeTableData.append("<br title='")
             .append(String.valueOf(info.getLastHealthUpdate())).append("'>")
             .append(Times.format(info.getLastHealthUpdate())).append("\",\"")
-            .append(info.getHealthReport()).append("\",\"")
+            .append(StringEscapeUtils.escapeJava(info.getHealthReport())).append("\",\"")
             .append(String.valueOf(info.getNumContainers())).append("\",\"")
             .append(info.getAllocationTagsSummary()).append("\",\"")
             .append("<br title='").append(String.valueOf(usedMemory))

@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.yarn.service;
 
+import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.fs.Path;
@@ -362,8 +363,12 @@ public class TestYarnNativeServices extends ServiceTestUtils {
 
     Multimap<String, String> containersAfterFailure = waitForAllCompToBeReady(
         client, exampleApp);
-    Assert.assertEquals("component container affected by restart",
-        containersBeforeFailure, containersAfterFailure);
+    containersBeforeFailure.keys().forEach(compName -> {
+      Assert.assertEquals("num containers after by restart for " + compName,
+          containersBeforeFailure.get(compName).size(),
+          containersAfterFailure.get(compName) == null ? 0 :
+              containersAfterFailure.get(compName).size());
+    });
 
     LOG.info("Stop/destroy service {}", exampleApp);
     client.actionStop(exampleApp.getName(), true);
@@ -415,8 +420,87 @@ public class TestYarnNativeServices extends ServiceTestUtils {
     client.actionDestroy(service.getName());
   }
 
+  @Test(timeout = 200000)
+  public void testExpressUpgrade() throws Exception {
+    setupInternal(NUM_NMS);
+    getConf().setBoolean(YARN_SERVICE_UPGRADE_ENABLED, true);
+    ServiceClient client = createClient(getConf());
+
+    Service service = createExampleApplication();
+    client.actionCreate(service);
+    waitForServiceToBeStable(client, service);
+
+    // upgrade the service
+    Component component = service.getComponents().iterator().next();
+    service.setState(ServiceState.EXPRESS_UPGRADING);
+    service.setVersion("v2");
+    component.getConfiguration().getEnv().put("key1", "val1");
+    Component component2 = service.getComponent("compb");
+    component2.getConfiguration().getEnv().put("key2", "val2");
+    client.actionUpgradeExpress(service);
+
+    // wait for upgrade to complete
+    waitForServiceToBeStable(client, service);
+    Service active = client.getStatus(service.getName());
+    Assert.assertEquals("component not stable", ComponentState.STABLE,
+        active.getComponent(component.getName()).getState());
+    Assert.assertEquals("compa does not have new env", "val1",
+        active.getComponent(component.getName()).getConfiguration()
+            .getEnv("key1"));
+    Assert.assertEquals("compb does not have new env", "val2",
+        active.getComponent(component2.getName()).getConfiguration()
+            .getEnv("key2"));
+    LOG.info("Stop/destroy service {}", service);
+    client.actionStop(service.getName(), true);
+    client.actionDestroy(service.getName());
+  }
+
+  @Test(timeout = 200000)
+  public void testCancelUpgrade() throws Exception {
+    setupInternal(NUM_NMS);
+    getConf().setBoolean(YARN_SERVICE_UPGRADE_ENABLED, true);
+    ServiceClient client = createClient(getConf());
+
+    Service service = createExampleApplication();
+    Component component = service.getComponents().iterator().next();
+    component.getConfiguration().getEnv().put("key1", "val0");
+
+    client.actionCreate(service);
+    waitForServiceToBeStable(client, service);
+
+    // upgrade the service
+    service.setState(ServiceState.UPGRADING);
+    service.setVersion("v2");
+    component.getConfiguration().getEnv().put("key1", "val1");
+    client.initiateUpgrade(service);
+
+    // wait for service to be in upgrade state
+    waitForServiceToBeInState(client, service, ServiceState.UPGRADING);
+
+    // upgrade 1 container
+    Service liveService = client.getStatus(service.getName());
+    Container container = liveService.getComponent(component.getName())
+        .getContainers().iterator().next();
+    client.actionUpgrade(service, Lists.newArrayList(container));
+
+    Thread.sleep(500);
+    // cancel the upgrade
+    client.actionCancelUpgrade(service.getName());
+    waitForServiceToBeStable(client, service);
+    Service active = client.getStatus(service.getName());
+    Assert.assertEquals("component not stable", ComponentState.STABLE,
+        active.getComponent(component.getName()).getState());
+    Assert.assertEquals("comp does not have new env", "val0",
+        active.getComponent(component.getName()).getConfiguration()
+            .getEnv("key1"));
+    LOG.info("Stop/destroy service {}", service);
+    client.actionStop(service.getName(), true);
+    client.actionDestroy(service.getName());
+  }
+
   // Test to verify ANTI_AFFINITY placement policy
-  // 1. Start mini cluster with 3 NMs and scheduler placement-constraint handler
+  // 1. Start mini cluster
+  // with 3 NMs and scheduler placement-constraint handler
   // 2. Create an example service with 3 containers
   // 3. Verify no more than 1 container comes up in each of the 3 NMs
   // 4. Flex the component to 4 containers

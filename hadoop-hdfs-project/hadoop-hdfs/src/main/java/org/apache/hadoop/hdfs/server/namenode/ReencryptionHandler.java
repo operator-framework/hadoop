@@ -337,7 +337,7 @@ public class ReencryptionHandler implements Runnable {
       }
 
       final Long zoneId;
-      dir.readLock();
+      dir.getFSNamesystem().readLock();
       try {
         zoneId = getReencryptionStatus().getNextUnprocessedZone();
         if (zoneId == null) {
@@ -349,7 +349,7 @@ public class ReencryptionHandler implements Runnable {
         getReencryptionStatus().markZoneStarted(zoneId);
         resetSubmissionTracker(zoneId);
       } finally {
-        dir.readUnlock();
+        dir.getFSNamesystem().readUnlock();
       }
 
       try {
@@ -713,10 +713,10 @@ public class ReencryptionHandler implements Runnable {
           zst = new ZoneSubmissionTracker();
           submissions.put(zoneId, zst);
         }
+        Future future = batchService.submit(new EDEKReencryptCallable(zoneId,
+            currentBatch, reencryptionHandler));
+        zst.addTask(future);
       }
-      Future future = batchService.submit(new EDEKReencryptCallable(zoneId,
-          currentBatch, reencryptionHandler));
-      zst.addTask(future);
       LOG.info("Submitted batch (start:{}, size:{}) of zone {} to re-encrypt.",
           currentBatch.getFirstFilePath(), currentBatch.size(), zoneId);
       currentBatch = new ReencryptionBatch(reencryptBatchSize);

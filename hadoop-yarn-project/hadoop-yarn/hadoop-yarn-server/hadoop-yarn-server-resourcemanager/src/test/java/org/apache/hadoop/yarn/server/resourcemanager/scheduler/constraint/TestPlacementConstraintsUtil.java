@@ -163,6 +163,11 @@ public class TestPlacementConstraintsUtil {
         ApplicationAttemptId.newInstance(appId, 0), 0);
   }
 
+  private ContainerId newContainerId(ApplicationId appId, int containerId) {
+    return ContainerId.newContainerId(
+        ApplicationAttemptId.newInstance(appId, 0), containerId);
+  }
+
   private SchedulerNode newSchedulerNode(String hostname, String rackName,
       NodeId nodeId) {
     SchedulerNode node = mock(SchedulerNode.class);
@@ -271,12 +276,10 @@ public class TestPlacementConstraintsUtil {
     SchedulerNode schedulerNode3 =newSchedulerNode(n3_r2.getHostName(),
         n3_r2.getRackName(), n3_r2.getNodeID());
 
-    ContainerId ca = ContainerId
-        .newContainerId(ApplicationAttemptId.newInstance(appId1, 0), 0);
+    ContainerId ca = newContainerId(appId1, 0);
     tm.addContainer(n0_r1.getNodeID(), ca, ImmutableSet.of("A"));
 
-    ContainerId cb = ContainerId
-        .newContainerId(ApplicationAttemptId.newInstance(appId1, 0), 0);
+    ContainerId cb = newContainerId(appId1, 1);
     tm.addContainer(n1_r1.getNodeID(), cb, ImmutableSet.of("B"));
 
     // n0 and n1 has A/B so they cannot satisfy the PC
@@ -297,11 +300,9 @@ public class TestPlacementConstraintsUtil {
      * n2: A(1), B(1)
      * n3:
      */
-    ContainerId ca1 = ContainerId
-        .newContainerId(ApplicationAttemptId.newInstance(appId1, 0), 0);
+    ContainerId ca1 = newContainerId(appId1, 2);
     tm.addContainer(n2_r2.getNodeID(), ca1, ImmutableSet.of("A"));
-    ContainerId cb1 = ContainerId
-        .newContainerId(ApplicationAttemptId.newInstance(appId1, 0), 0);
+    ContainerId cb1 = newContainerId(appId1, 3);
     tm.addContainer(n2_r2.getNodeID(), cb1, ImmutableSet.of("B"));
 
     // Only n2 has both A and B so only it can satisfy the PC
@@ -468,9 +469,9 @@ public class TestPlacementConstraintsUtil {
      *  n3: ""
      */
     tm.addContainer(n0r1.getNodeID(),
-        newContainerId(appId1), ImmutableSet.of("hbase-m"));
+        newContainerId(appId1, 1), ImmutableSet.of("hbase-m"));
     tm.addContainer(n2r2.getNodeID(),
-        newContainerId(appId1), ImmutableSet.of("hbase-rs"));
+        newContainerId(appId1, 2), ImmutableSet.of("hbase-rs"));
     Assert.assertEquals(1L, tm.getAllocationTagsWithCount(n0r1.getNodeID())
         .get("hbase-m").longValue());
     Assert.assertEquals(1L, tm.getAllocationTagsWithCount(n2r2.getNodeID())
@@ -504,7 +505,7 @@ public class TestPlacementConstraintsUtil {
      *  n3: hbase-rs(1)
      */
     tm.addContainer(n3r2.getNodeID(),
-        newContainerId(appId1), ImmutableSet.of("hbase-rs"));
+        newContainerId(appId1, 2), ImmutableSet.of("hbase-rs"));
     // n3 is qualified now because it is allocated with hbase-rs tag
     Assert.assertTrue(PlacementConstraintsUtil.canSatisfyConstraints(appId1,
         createSchedulingRequest(sourceTag1), schedulerNode3, pcm, tm));
@@ -518,7 +519,7 @@ public class TestPlacementConstraintsUtil {
      */
     // Place
     tm.addContainer(n2r2.getNodeID(),
-        newContainerId(appId1), ImmutableSet.of("spark"));
+        newContainerId(appId1, 3), ImmutableSet.of("spark"));
     // According to constraint, "zk" is allowed to be placed on a node
     // has "hbase-m" tag OR a node has both "hbase-rs" and "spark" tags.
     Assert.assertTrue(PlacementConstraintsUtil.canSatisfyConstraints(appId1,
@@ -552,9 +553,9 @@ public class TestPlacementConstraintsUtil {
      *  n3: ""
      */
     tm.addContainer(n0r1.getNodeID(),
-        newContainerId(appId1), ImmutableSet.of("hbase-m"));
+        newContainerId(appId1, 0), ImmutableSet.of("hbase-m"));
     tm.addContainer(n2r2.getNodeID(),
-        newContainerId(appId1), ImmutableSet.of("hbase-m"));
+        newContainerId(appId1, 1), ImmutableSet.of("hbase-m"));
     Assert.assertEquals(1L, tm.getAllocationTagsWithCount(n0r1.getNodeID())
         .get("hbase-m").longValue());
     Assert.assertEquals(1L, tm.getAllocationTagsWithCount(n2r2.getNodeID())
@@ -589,7 +590,7 @@ public class TestPlacementConstraintsUtil {
      */
     for (int i=0; i<4; i++) {
       tm.addContainer(n1r1.getNodeID(),
-          newContainerId(appId1), ImmutableSet.of("spark"));
+          newContainerId(appId1, i+2), ImmutableSet.of("spark"));
     }
     Assert.assertEquals(4L, tm.getAllocationTagsWithCount(n1r1.getNodeID())
         .get("spark").longValue());
@@ -633,19 +634,19 @@ public class TestPlacementConstraintsUtil {
      *  n3: ""
      */
     tm.addContainer(n0r1.getNodeID(),
-        newContainerId(application1), ImmutableSet.of("A"));
+        newContainerId(application1, 0), ImmutableSet.of("A"));
     tm.addContainer(n0r1.getNodeID(),
-        newContainerId(application2), ImmutableSet.of("A"));
+        newContainerId(application2, 1), ImmutableSet.of("A"));
     tm.addContainer(n1r1.getNodeID(),
-        newContainerId(application3), ImmutableSet.of("A"));
+        newContainerId(application3, 2), ImmutableSet.of("A"));
     tm.addContainer(n1r1.getNodeID(),
-        newContainerId(application3), ImmutableSet.of("A"));
+        newContainerId(application3, 3), ImmutableSet.of("A"));
     tm.addContainer(n1r1.getNodeID(),
-        newContainerId(application3), ImmutableSet.of("A"));
+        newContainerId(application3, 4), ImmutableSet.of("A"));
     tm.addContainer(n2r2.getNodeID(),
-        newContainerId(application1), ImmutableSet.of("A"));
+        newContainerId(application1, 5), ImmutableSet.of("A"));
     tm.addContainer(n2r2.getNodeID(),
-        newContainerId(application1), ImmutableSet.of("A"));
+        newContainerId(application1, 6), ImmutableSet.of("A"));
 
     SchedulerNode schedulerNode0 = newSchedulerNode(n0r1.getHostName(),
         n0r1.getRackName(), n0r1.getNodeID());
@@ -873,6 +874,8 @@ public class TestPlacementConstraintsUtil {
 
     long ts = System.currentTimeMillis();
     ApplicationId application1 = BuilderUtils.newApplicationId(ts, 123);
+    ApplicationId application2 = BuilderUtils.newApplicationId(ts, 124);
+    ApplicationId application3 = BuilderUtils.newApplicationId(ts, 125);
 
     // Register App1 with anti-affinity constraint map.
     RMNode n0r1 = rmNodes.get(0);
@@ -888,9 +891,9 @@ public class TestPlacementConstraintsUtil {
      *  n3: ""
      */
     tm.addContainer(n0r1.getNodeID(),
-        newContainerId(application1), ImmutableSet.of("hbase-m"));
+        newContainerId(application1, 0), ImmutableSet.of("hbase-m"));
     tm.addContainer(n2r2.getNodeID(),
-        newContainerId(application1), ImmutableSet.of("hbase-m"));
+        newContainerId(application1, 1), ImmutableSet.of("hbase-m"));
     Assert.assertEquals(1L, tm.getAllocationTagsWithCount(n0r1.getNodeID())
         .get("hbase-m").longValue());
     Assert.assertEquals(1L, tm.getAllocationTagsWithCount(n2r2.getNodeID())
@@ -916,8 +919,6 @@ public class TestPlacementConstraintsUtil {
     srcTags2.add("app2");
     constraintMap.put(srcTags2, constraint2);
 
-    ts = System.currentTimeMillis();
-    ApplicationId application2 = BuilderUtils.newApplicationId(ts, 124);
     pcm.registerApplication(application2, constraintMap);
 
     // Anti-affinity with app1/hbase-m so it should not be able to be placed
@@ -946,10 +947,7 @@ public class TestPlacementConstraintsUtil {
     srcTags3.add("app3");
     constraintMap.put(srcTags3, constraint3);
 
-    ts = System.currentTimeMillis();
-    ApplicationId application3 = BuilderUtils.newApplicationId(ts, 124);
     pcm.registerApplication(application3, constraintMap);
-
     /**
      * Place container:
      *  n0: app1/hbase-m(1), app3/hbase-m
@@ -958,7 +956,7 @@ public class TestPlacementConstraintsUtil {
      *  n3: ""
      */
     tm.addContainer(n0r1.getNodeID(),
-        newContainerId(application3), ImmutableSet.of("hbase-m"));
+        newContainerId(application3, 0), ImmutableSet.of("hbase-m"));
 
     // Anti-affinity to self/hbase-m
     Assert.assertFalse(PlacementConstraintsUtil

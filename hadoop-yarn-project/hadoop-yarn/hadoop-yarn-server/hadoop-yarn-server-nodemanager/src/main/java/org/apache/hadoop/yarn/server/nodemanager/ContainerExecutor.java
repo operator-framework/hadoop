@@ -26,6 +26,7 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -34,6 +35,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,6 +77,7 @@ public abstract class ContainerExecutor implements Configurable {
   private static final Logger LOG =
        LoggerFactory.getLogger(ContainerExecutor.class);
   protected static final String WILDCARD = "*";
+  public static final String TOKEN_FILE_NAME_FMT = "%s.tokens";
 
   /**
    * The permissions to use when creating the launch script.
@@ -401,34 +404,13 @@ public abstract class ContainerExecutor implements Configurable {
           sb.env(env.getKey(), env.getValue());
         }
       }
-      // Add the whitelist vars to the environment.  Do this after writing
-      // environment variables so they are not written twice.
-      for(String var : whitelistVars) {
-        if (!environment.containsKey(var)) {
-          String val = getNMEnvVar(var);
-          if (val != null) {
-            environment.put(var, val);
-          }
-        }
-      }
     }
 
     if (resources != null) {
       sb.echo("Setting up job resources");
-      for (Map.Entry<Path, List<String>> resourceEntry :
-          resources.entrySet()) {
-        for (String linkName : resourceEntry.getValue()) {
-          if (new Path(linkName).getName().equals(WILDCARD)) {
-            // If this is a wildcarded path, link to everything in the
-            // directory from the working directory
-            for (File wildLink : readDirAsUser(user, resourceEntry.getKey())) {
-              sb.symlink(new Path(wildLink.toString()),
-                  new Path(wildLink.getName()));
-            }
-          } else {
-            sb.symlink(resourceEntry.getKey(), new Path(linkName));
-          }
-        }
+      Map<Path, Path> symLinks = resolveSymLinks(resources, user);
+      for (Map.Entry<Path, Path> symLink : symLinks.entrySet()) {
+        sb.symlink(symLink.getKey(), symLink.getValue());
       }
     }
 
@@ -790,6 +772,28 @@ public abstract class ContainerExecutor implements Configurable {
   }
 
   /**
+   * Perform any cleanup before the next launch of the container.
+   * @param container         container
+   */
+  public void cleanupBeforeRelaunch(Container container)
+      throws IOException, InterruptedException {
+    if (container.getLocalizedResources() != null) {
+
+      Map<Path, Path> symLinks = resolveSymLinks(
+          container.getLocalizedResources(), container.getUser());
+
+      for (Map.Entry<Path, Path> symLink : symLinks.entrySet()) {
+        LOG.debug("{} deleting {}", container.getContainerId(),
+            symLink.getValue());
+        deleteAsUser(new DeletionAsUserContext.Builder()
+            .setUser(container.getUser())
+            .setSubDir(symLink.getValue())
+            .build());
+      }
+    }
+  }
+
+  /**
    * Get the process-identifier for the container.
    *
    * @param containerID the container ID
@@ -867,5 +871,26 @@ public abstract class ContainerExecutor implements Configurable {
             container.getContainerId(), message));
       }
     }
+  }
+
+  private Map<Path, Path> resolveSymLinks(Map<Path,
+      List<String>> resources, String user) {
+    Map<Path, Path> symLinks = new HashMap<>();
+    for (Map.Entry<Path, List<String>> resourceEntry :
+        resources.entrySet()) {
+      for (String linkName : resourceEntry.getValue()) {
+        if (new Path(linkName).getName().equals(WILDCARD)) {
+          // If this is a wildcarded path, link to everything in the
+          // directory from the working directory
+          for (File wildLink : readDirAsUser(user, resourceEntry.getKey())) {
+            symLinks.put(new Path(wildLink.toString()),
+                new Path(wildLink.getName()));
+          }
+        } else {
+          symLinks.put(resourceEntry.getKey(), new Path(linkName));
+        }
+      }
+    }
+    return symLinks;
   }
 }

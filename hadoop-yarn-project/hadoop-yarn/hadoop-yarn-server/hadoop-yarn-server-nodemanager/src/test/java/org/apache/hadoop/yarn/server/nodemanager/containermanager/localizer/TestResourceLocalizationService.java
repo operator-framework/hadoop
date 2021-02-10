@@ -1717,8 +1717,18 @@ public class TestResourceLocalizationService {
       assertEquals("NM should tell localizer to be LIVE in Heartbeat.",
           LocalizerAction.LIVE, response.getLocalizerAction());
 
-      // Cleanup application.
+      // Cleanup container.
       spyService.handle(new ContainerLocalizationCleanupEvent(c, rsrcs));
+      dispatcher.await();
+      try {
+        /*Directly send heartbeat to introduce race as container
+          is being cleaned up.*/
+        locRunnerForContainer.processHeartbeat(
+              Collections.singletonList(rsrcSuccess));
+      } catch (Exception e) {
+        fail("Exception should not have been thrown on processing heartbeat");
+      }
+      // Cleanup application.
       spyService.handle(new ApplicationLocalizationEvent(
           LocalizationEventType.DESTROY_APPLICATION_RESOURCES, app));
       dispatcher.await();
@@ -2398,6 +2408,9 @@ public class TestResourceLocalizationService {
       // Waiting for resource to change into FAILED state.
       Assert.assertTrue(waitForResourceState(lr, spyService, req,
         LocalResourceVisibility.PUBLIC, user, null, ResourceState.FAILED, 5000));
+      Assert.assertTrue(waitForResourceState(lr, spyService, req,
+          LocalResourceVisibility.APPLICATION, user, appId, ResourceState.FAILED, 5000));
+
       // releasing lock as a part of download failed process.
       lr.unlock();
       // removing pending download request.

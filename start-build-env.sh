@@ -61,7 +61,7 @@ docker build -t "hadoop-build-${USER_ID}" - <<UserSpecificDocker
 FROM hadoop-build
 RUN groupadd --non-unique -g ${GROUP_ID} ${USER_NAME}
 RUN useradd -g ${GROUP_ID} -u ${USER_ID} -k /root -m ${USER_NAME}
-RUN echo "${USER_NAME}\tALL=NOPASSWD: ALL" > "/etc/sudoers.d/hadoop-build-${USER_ID}"
+RUN echo "${USER_NAME} ALL=NOPASSWD: ALL" > "/etc/sudoers.d/hadoop-build-${USER_ID}"
 ENV HOME /home/${USER_NAME}
 
 UserSpecificDocker
@@ -74,5 +74,5 @@ docker run --rm=true -t -i \
   -v "${PWD}:/home/${USER_NAME}/hadoop${V_OPTS:-}" \
   -w "/home/${USER_NAME}/hadoop" \
   -v "${HOME}/.m2:/home/${USER_NAME}/.m2${V_OPTS:-}" \
-  -u "${USER_NAME}" \
+  -u "${USER_ID}" \
   "hadoop-build-${USER_ID}"

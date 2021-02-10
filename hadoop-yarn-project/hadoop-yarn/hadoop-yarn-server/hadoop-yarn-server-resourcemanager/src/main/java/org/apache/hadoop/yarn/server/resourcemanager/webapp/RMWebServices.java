@@ -31,6 +31,7 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -141,6 +142,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfigValidator;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo.FifoScheduler;
@@ -160,6 +162,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.CapacitySchedulerInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ClusterInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ClusterMetricsInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ClusterUserInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.DelegationToken;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.FairSchedulerInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.FifoSchedulerInfo;
@@ -187,6 +190,8 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ResourceInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.SchedulerInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.SchedulerTypeInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.StatisticsItemInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ConfigVersionInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ConfInfo;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.server.webapp.WebServices;
@@ -229,6 +234,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @VisibleForTesting
   boolean isCentralizedNodeLabelConfiguration = true;
   private boolean filterAppsByUser = false;
+  private boolean enableRestAppSubmissions = true;
 
   public final static String DELEGATION_TOKEN_HEADER =
       "Hadoop-YARN-RM-Delegation-Token";
@@ -244,6 +250,9 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     this.filterAppsByUser  = conf.getBoolean(
         YarnConfiguration.FILTER_ENTITY_LIST_BY_USER,
         YarnConfiguration.DEFAULT_DISPLAY_APPS_FOR_LOGGED_IN_USER);
+    this.enableRestAppSubmissions = conf.getBoolean(
+        YarnConfiguration.ENABLE_REST_APP_SUBMISSIONS,
+        YarnConfiguration.DEFAULT_ENABLE_REST_APP_SUBMISSIONS);
   }
 
   RMWebServices(ResourceManager rm, Configuration conf,
@@ -333,6 +342,17 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   public ClusterInfo getClusterInfo() {
     initForReadableEndpoints();
     return new ClusterInfo(this.rm);
+  }
+
+  @GET
+  @Path(RMWSConsts.CLUSTER_USER_INFO)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  @Override
+  public ClusterUserInfo getClusterUserInfo(@Context HttpServletRequest hsr) {
+    initForReadableEndpoints();
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    return new ClusterUserInfo(this.rm, callerUGI);
   }
 
   @GET
@@ -428,9 +448,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     NodesInfo nodesInfo = new NodesInfo();
     for (RMNode rmNode : rmNodes) {
       NodeInfo nodeInfo = new NodeInfo(rmNode, sched);
-      if (EnumSet
-          .of(NodeState.LOST, NodeState.DECOMMISSIONED, NodeState.REBOOTED)
-          .contains(rmNode.getState())) {
+      if (rmNode.getState().isInactiveState()) {
         nodeInfo.setNodeHTTPAddress(RMWSConsts.EMPTY);
       }
       nodesInfo.add(nodeInfo);
@@ -842,7 +860,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   }
 
   @GET
-  @Path("/apps/{appid}/appattempts/{appattemptid}/containers/{containerid}")
+  @Path(RMWSConsts.GET_CONTAINER)
   @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Override
@@ -856,7 +874,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   }
 
   @GET
-  @Path("/apps/{appid}/state")
+  @Path(RMWSConsts.APPS_APPID_STATE)
   @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Override
@@ -1459,6 +1477,10 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   @Override
   public Response createNewApplication(@Context HttpServletRequest hsr)
       throws AuthorizationException, IOException, InterruptedException {
+    if (!enableRestAppSubmissions) {
+      String msg = "App submission via REST is disabled.";
+      return Response.status(Status.FORBIDDEN).entity(msg).build();
+    }
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
     initForWritableEndpoints(callerUGI, false);
 
@@ -1479,6 +1501,10 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
   public Response submitApplication(ApplicationSubmissionContextInfo newApp,
       @Context HttpServletRequest hsr)
       throws AuthorizationException, IOException, InterruptedException {
+    if (!enableRestAppSubmissions) {
+      String msg = "App submission via REST is disabled.";
+      return Response.status(Status.FORBIDDEN).entity(msg).build();
+    }
 
     UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
     initForWritableEndpoints(callerUGI, false);
@@ -2308,8 +2334,63 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     return rm.getClientRMService().getContainers(request).getContainerList();
   }
 
+  @POST
+  @Path(RMWSConsts.SCHEDULER_CONF_VALIDATE)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+          MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  @Consumes({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  public synchronized Response validateAndGetSchedulerConfiguration(
+          SchedConfUpdateInfo mutationInfo,
+          @Context HttpServletRequest hsr) throws AuthorizationException {
+    // Only admin user is allowed to read scheduler conf,
+    // in order to avoid leaking sensitive info, such as ACLs
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, true);
+    ResourceScheduler scheduler = rm.getResourceScheduler();
+    if (scheduler instanceof MutableConfScheduler && ((MutableConfScheduler)
+            scheduler).isConfigurationMutable()) {
+      try {
+        MutableConfigurationProvider mutableConfigurationProvider =
+                ((MutableConfScheduler) scheduler).getMutableConfProvider();
+        Configuration schedulerConf = mutableConfigurationProvider
+                .getConfiguration();
+        Configuration newSchedulerConf = mutableConfigurationProvider
+                .applyChanges(schedulerConf, mutationInfo);
+        Configuration yarnConf = ((CapacityScheduler) scheduler).getConf();
+
+        Configuration newConfig = new Configuration(yarnConf);
+        Iterator<Map.Entry<String, String>> iter = newSchedulerConf.iterator();
+        Entry<String, String> e = null;
+        while (iter.hasNext()) {
+          e = iter.next();
+          newConfig.set(e.getKey(), e.getValue());
+        }
+        CapacitySchedulerConfigValidator.validateCSConfiguration(yarnConf,
+                newConfig, rm.getRMContext());
+
+        return Response.status(Status.OK)
+                .entity(new ConfInfo(newSchedulerConf))
+                .build();
+      } catch (Exception e) {
+        String errorMsg = "CapacityScheduler configuration validation failed:"
+                  + e.toString();
+        LOG.warn(errorMsg);
+        return Response.status(Status.BAD_REQUEST)
+                  .entity(errorMsg)
+                  .build();
+      }
+    } else {
+      String errorMsg = "Configuration change validation only supported by " +
+              "MutableConfScheduler.";
+      LOG.warn(errorMsg);
+      return Response.status(Status.BAD_REQUEST)
+              .entity(errorMsg)
+              .build();
+    }
+  }
+
   @PUT
-  @Path("/scheduler-conf")
+  @Path(RMWSConsts.SCHEDULER_CONF)
   @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Consumes({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
@@ -2357,6 +2438,111 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
           .entity("Configuration change only supported by " +
               "MutableConfScheduler.")
           .build();
+    }
+  }
+
+  @GET
+  @Path(RMWSConsts.FORMAT_SCHEDULER_CONF)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  public Response formatSchedulerConfiguration(@Context HttpServletRequest hsr)
+      throws AuthorizationException {
+    // Only admin user allowed to format scheduler conf in configuration store
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, true);
+
+    ResourceScheduler scheduler = rm.getResourceScheduler();
+    if (scheduler instanceof MutableConfScheduler
+        && ((MutableConfScheduler) scheduler).isConfigurationMutable()) {
+      try {
+        MutableConfigurationProvider mutableConfigurationProvider =
+            ((MutableConfScheduler) scheduler).getMutableConfProvider();
+        mutableConfigurationProvider.formatConfigurationInStore(conf);
+        try {
+          rm.getRMContext().getRMAdminService().refreshQueues();
+        } catch (IOException | YarnException e) {
+          LOG.error("Exception thrown when formatting configuration.", e);
+          mutableConfigurationProvider.revertToOldConfig(conf);
+          throw e;
+        }
+        return Response.status(Status.OK).entity("Configuration under " +
+            "store successfully formatted.").build();
+      } catch (Exception e) {
+        LOG.error("Exception thrown when formating configuration", e);
+        return Response.status(Status.BAD_REQUEST).entity(e.getMessage())
+            .build();
+      }
+    } else {
+      return Response.status(Status.BAD_REQUEST)
+          .entity("Scheduler Configuration format only supported by " +
+          "MutableConfScheduler.").build();
+    }
+  }
+
+
+  @GET
+  @Path(RMWSConsts.SCHEDULER_CONF)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  public Response getSchedulerConfiguration(@Context HttpServletRequest hsr)
+      throws AuthorizationException {
+    // Only admin user is allowed to read scheduler conf,
+    // in order to avoid leaking sensitive info, such as ACLs
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, true);
+
+    ResourceScheduler scheduler = rm.getResourceScheduler();
+    if (scheduler instanceof MutableConfScheduler
+        && ((MutableConfScheduler) scheduler).isConfigurationMutable()) {
+      MutableConfigurationProvider mutableConfigurationProvider =
+          ((MutableConfScheduler) scheduler).getMutableConfProvider();
+      // We load the cached configuration from configuration store,
+      // this should be the conf properties used by the scheduler.
+      Configuration schedulerConf = mutableConfigurationProvider
+          .getConfiguration();
+      return Response.status(Status.OK)
+          .entity(new ConfInfo(schedulerConf))
+          .build();
+    } else {
+      return Response.status(Status.BAD_REQUEST).entity(
+          "This API only supports to retrieve scheduler configuration"
+              + " from a mutable-conf scheduler, underneath scheduler "
+              + scheduler.getClass().getSimpleName()
+              + " is not an instance of MutableConfScheduler")
+          .build();
+    }
+  }
+
+  @GET
+  @Path(RMWSConsts.SCHEDULER_CONF_VERSION)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+       MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  public Response getSchedulerConfigurationVersion(@Context
+      HttpServletRequest hsr) throws AuthorizationException {
+    // Only admin user is allowed to get scheduler conf version
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    initForWritableEndpoints(callerUGI, true);
+
+    ResourceScheduler scheduler = rm.getResourceScheduler();
+    if (scheduler instanceof MutableConfScheduler
+        && ((MutableConfScheduler) scheduler).isConfigurationMutable()) {
+      MutableConfigurationProvider mutableConfigurationProvider =
+          ((MutableConfScheduler) scheduler).getMutableConfProvider();
+
+      try {
+        long configVersion = mutableConfigurationProvider
+            .getConfigVersion();
+        return Response.status(Status.OK)
+            .entity(new ConfigVersionInfo(configVersion)).build();
+      } catch (Exception e) {
+        LOG.error("Exception thrown when fetching configuration version.", e);
+        return Response.status(Status.BAD_REQUEST).entity(e.getMessage())
+            .build();
+      }
+    } else {
+      return Response.status(Status.BAD_REQUEST)
+          .entity("Configuration Version only supported by "
+          + "MutableConfScheduler.").build();
     }
   }
 

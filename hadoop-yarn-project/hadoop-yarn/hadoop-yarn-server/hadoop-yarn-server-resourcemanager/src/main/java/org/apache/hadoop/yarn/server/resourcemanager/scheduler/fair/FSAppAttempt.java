@@ -162,7 +162,8 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
 
       Resource containerResource = rmContainer.getContainer().getResource();
       RMAuditLogger.logSuccess(getUser(), AuditConstants.RELEASE_CONTAINER,
-          "SchedulerApp", getApplicationId(), containerId, containerResource);
+          "SchedulerApp", getApplicationId(), containerId, containerResource,
+          rmContainer.getQueueName(), null);
 
       // Update usage metrics
       queue.getMetrics().releaseResources(
@@ -480,7 +481,7 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
       }
       RMAuditLogger.logSuccess(getUser(), AuditConstants.ALLOC_CONTAINER,
           "SchedulerApp", getApplicationId(), container.getId(),
-          container.getResource());
+          container.getResource(), getQueueName(), null);
     } finally {
       writeLock.unlock();
     }
@@ -935,8 +936,8 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
     if (!isAmRunning() && !getUnmanagedAM()) {
       // Return true if we have not ask, or queue is not be able to run app's AM
       PendingAsk ask = appSchedulingInfo.getNextPendingAsk();
-      if (ask.getCount() == 0 || !getQueue().canRunAppAM(
-          ask.getPerAllocationResource())) {
+      if (ask != null && (ask.getCount() == 0 || !getQueue().canRunAppAM(
+          ask.getPerAllocationResource()))) {
         return true;
       }
     }

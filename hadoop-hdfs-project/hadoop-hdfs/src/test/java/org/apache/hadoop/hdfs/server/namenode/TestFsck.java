@@ -166,7 +166,7 @@ public class TestFsck {
   private static final String LINE_SEPARATOR =
       System.getProperty("line.separator");
 
-  static String runFsck(Configuration conf, int expectedErrCode, 
+  public static String runFsck(Configuration conf, int expectedErrCode,
                         boolean checkErrorCode, String... path)
                         throws Exception {
     ByteArrayOutputStream bStream = new ByteArrayOutputStream();
@@ -2487,5 +2487,23 @@ public class TestFsck {
       DFSTestUtil.appendFile(fs, fileName, "appendCorruptBlock");
       runFsck(cluster.getConfiguration(0), 0, true, "/");
     }
+  }
+
+  @Test
+  public void testFsckNonPrivilegedListCorrupt() throws Exception {
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(4).build();
+    UserGroupInformation ugi = UserGroupInformation.createUserForTesting("systest", new String[]{""});
+    ugi.doAs(new PrivilegedExceptionAction<Void>() {
+       @Override
+        public Void run() throws Exception {
+         String path = "/";
+         String outStr = runFsck(conf, -1, true, path, "-list-corruptfileblocks");
+
+         assertFalse(outStr.contains("The list of corrupt files under path '" + path + "' are:"));
+         assertFalse(outStr.contains("The filesystem under path '" + path + "' has "));
+         assertTrue(outStr.contains("Failed to open path '" + path + "': Permission denied"));
+         return null;
+       }
+      });
   }
 }

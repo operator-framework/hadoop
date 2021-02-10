@@ -264,7 +264,7 @@ Displays a summary of file lengths.
 expunge
 -------
 
-Usage: `hadoop fs -expunge`
+Usage: `hadoop fs -expunge [-immediate]`
 
 Permanently delete files in checkpoints older than the retention threshold
 from trash directory, and create new checkpoint.
@@ -278,6 +278,9 @@ If the file system supports the feature,
 users can configure to create and delete checkpoints periodically
 by the parameter stored as `fs.trash.checkpoint.interval` (in core-site.xml).
 This value should be smaller or equal to `fs.trash.interval`.
+
+If the `-immediate` option is passed, all files in the trash for the current
+user are immediately deleted, ignoring the `fs.trash.interval` setting.
 
 Refer to the
 [HDFS Architecture guide](../hadoop-hdfs/HdfsDesign.html#File_Deletes_and_Undeletes)
@@ -740,6 +743,38 @@ text
 Usage: `hadoop fs -text <src> `
 
 Takes a source file and outputs the file in text format. The allowed formats are zip and TextRecordInputStream.
+
+touch
+------
+
+Usage: `hadoop fs -touch [-a] [-m] [-t TIMESTAMP] [-c] URI [URI ...]`
+
+Updates the access and modification times of the file specified by the URI to the current time.
+If the file does not exist, then a zero length file is created at URI with current time as the
+timestamp of that URI.
+
+* Use -a option to change only the access time
+* Use -m option to change only the modification time
+* Use -t option to specify timestamp (in format yyyyMMddHHmmss) instead of current time
+* Use -c option to not create file if it does not exist
+
+The timestamp format is as follows
+* yyyy Four digit year (e.g. 2018)
+* MM Two digit month of the year (e.g. 08 for month of August)
+* dd Two digit day of the month (e.g. 01 for first day of the month)
+* HH Two digit hour of the day using 24 hour notation (e.g. 23 stands for 11 pm, 11 stands for 11 am)
+* mm Two digit minutes of the hour
+* ss Two digit seconds of the minute
+e.g. 20180809230000 represents August 9th 2018, 11pm
+
+Example:
+
+* `hadoop fs -touch pathname`
+* `hadoop fs -touch -m -t 20180809230000 pathname`
+* `hadoop fs -touch -t 20180809230000 pathname`
+* `hadoop fs -touch -a pathname`
+
+Exit Code: Returns 0 on success and -1 on error.
 
 touchz
 ------

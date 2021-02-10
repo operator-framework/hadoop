@@ -76,6 +76,48 @@ public class StripedBlockUtil {
       LoggerFactory.getLogger(StripedBlockUtil.class);
 
   /**
+   * Struct holding the read statistics. This is used when reads are done
+   * asynchronously, to allow the async threads return the read stats and let
+   * the main reading thread to update the stats. This is important for the
+   * ThreadLocal stats for the main reading thread to be correct.
+   */
+  public static class BlockReadStats {
+    private final int bytesRead;
+    private final boolean isShortCircuit;
+    private final int networkDistance;
+
+    public BlockReadStats(int numBytesRead, boolean shortCircuit,
+        int distance) {
+      bytesRead = numBytesRead;
+      isShortCircuit = shortCircuit;
+      networkDistance = distance;
+    }
+
+    public int getBytesRead() {
+      return bytesRead;
+    }
+
+    public boolean isShortCircuit() {
+      return isShortCircuit;
+    }
+
+    public int getNetworkDistance() {
+      return networkDistance;
+    }
+
+    @Override
+    public String toString() {
+      final StringBuilder sb = new StringBuilder();
+      sb.append("bytesRead=").append(bytesRead);
+      sb.append(',');
+      sb.append("isShortCircuit=").append(isShortCircuit);
+      sb.append(',');
+      sb.append("networkDistance=").append(networkDistance);
+      return sb.toString();
+    }
+  }
+
+  /**
    * This method parses a striped block group into individual blocks.
    *
    * @param bg The striped block group
@@ -244,10 +286,11 @@ public class StripedBlockUtil {
    * @throws InterruptedException
    */
   public static StripingChunkReadResult getNextCompletedStripedRead(
-      CompletionService<Void> readService, Map<Future<Void>, Integer> futures,
+      CompletionService<BlockReadStats> readService,
+      Map<Future<BlockReadStats>, Integer> futures,
       final long timeoutMillis) throws InterruptedException {
     Preconditions.checkArgument(!futures.isEmpty());
-    Future<Void> future = null;
+    Future<BlockReadStats> future = null;
     try {
       if (timeoutMillis > 0) {
         future = readService.poll(timeoutMillis, TimeUnit.MILLISECONDS);
@@ -255,9 +298,9 @@ public class StripedBlockUtil {
         future = readService.take();
       }
       if (future != null) {
-        future.get();
+        final BlockReadStats stats = future.get();
         return new StripingChunkReadResult(futures.remove(future),
-            StripingChunkReadResult.SUCCESSFUL);
+            StripingChunkReadResult.SUCCESSFUL, stats);
       } else {
         return new StripingChunkReadResult(StripingChunkReadResult.TIMEOUT);
       }
@@ -312,7 +355,8 @@ public class StripedBlockUtil {
         cells);
 
     // Step 3: merge into stripes
-    AlignedStripe[] stripes = mergeRangesForInternalBlocks(ecPolicy, ranges);
+    AlignedStripe[] stripes = mergeRangesForInternalBlocks(ecPolicy, ranges,
+        blockGroup, cellSize);
 
     // Step 4: calculate each chunk's position in destination buffer. Since the
     // whole read range is within a single stripe, the logic is simpler here.
@@ -373,7 +417,8 @@ public class StripedBlockUtil {
         cells);
 
     // Step 3: merge into at most 5 stripes
-    AlignedStripe[] stripes = mergeRangesForInternalBlocks(ecPolicy, ranges);
+    AlignedStripe[] stripes = mergeRangesForInternalBlocks(ecPolicy, ranges,
+        blockGroup, cellSize);
 
     // Step 4: calculate each chunk's position in destination buffer
     calcualteChunkPositionsInBuf(cellSize, stripes, cells, buf);
@@ -469,7 +514,8 @@ public class StripedBlockUtil {
    * {@link AlignedStripe} instances.
    */
   private static AlignedStripe[] mergeRangesForInternalBlocks(
-      ErasureCodingPolicy ecPolicy, VerticalRange[] ranges) {
+      ErasureCodingPolicy ecPolicy, VerticalRange[] ranges,
+      LocatedStripedBlock blockGroup, int cellSize) {
     int dataBlkNum = ecPolicy.getNumDataUnits();
     int parityBlkNum = ecPolicy.getNumParityUnits();
     List<AlignedStripe> stripes = new ArrayList<>();
@@ -479,6 +525,17 @@ public class StripedBlockUtil {
         stripePoints.add(r.offsetInBlock);
         stripePoints.add(r.offsetInBlock + r.spanInBlock);
       }
+    }
+
+    // Add block group last cell offset in stripePoints if it is fall in to read
+    // offset range.
+    int lastCellIdxInBG = (int) (blockGroup.getBlockSize() / cellSize);
+    int idxInInternalBlk = lastCellIdxInBG / ecPolicy.getNumDataUnits();
+    long lastCellEndOffset = (idxInInternalBlk * (long)cellSize)
+        + (blockGroup.getBlockSize() % cellSize);
+    if (stripePoints.first() < lastCellEndOffset
+        && stripePoints.last() > lastCellEndOffset) {
+      stripePoints.add(lastCellEndOffset);
     }
 
     long prev = -1;
@@ -874,24 +931,36 @@ public class StripedBlockUtil {
 
     public final int index;
     public final int state;
+    private final BlockReadStats readStats;
 
     public StripingChunkReadResult(int state) {
       Preconditions.checkArgument(state == TIMEOUT,
           "Only timeout result should return negative index.");
       this.index = -1;
       this.state = state;
+      this.readStats = null;
     }
 
     public StripingChunkReadResult(int index, int state) {
+      this(index, state, null);
+    }
+
+    public StripingChunkReadResult(int index, int state, BlockReadStats stats) {
       Preconditions.checkArgument(state != TIMEOUT,
           "Timeout result should return negative index.");
       this.index = index;
       this.state = state;
+      this.readStats = stats;
+    }
+
+    public BlockReadStats getReadStats() {
+      return readStats;
     }
 
     @Override
     public String toString() {
-      return "(index=" + index + ", state =" + state + ")";
+      return "(index=" + index + ", state =" + state + ", readStats ="
+          + readStats + ")";
     }
   }
 

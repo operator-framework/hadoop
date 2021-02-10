@@ -358,7 +358,7 @@ public class RMStateStoreTestBase {
         ApplicationStateData.newInstance(appState.getSubmitTime(),
             appState.getStartTime(), appState.getUser(),
             appState.getApplicationSubmissionContext(), RMAppState.FINISHED,
-            "appDiagnostics", 1234, appState.getCallerContext());
+            "appDiagnostics", 123, 1234, appState.getCallerContext());
     appState2.attempts.putAll(appState.attempts);
     store.updateApplicationState(appState2);
 
@@ -371,7 +371,8 @@ public class RMStateStoreTestBase {
             oldAttemptState.getStartTime(), RMAppAttemptState.FINISHED,
             "myTrackingUrl", "attemptDiagnostics",
             FinalApplicationStatus.SUCCEEDED, 100,
-            oldAttemptState.getFinishTime(), new HashMap<>(), new HashMap<>());
+            oldAttemptState.getFinishTime(), new HashMap<>(), new HashMap<>(),
+            0);
     store.updateApplicationAttemptState(newAttemptState);
 
     // test updating the state of an app/attempt whose initial state was not
@@ -384,7 +385,7 @@ public class RMStateStoreTestBase {
     ApplicationStateData dummyApp =
         ApplicationStateData.newInstance(appState.getSubmitTime(),
             appState.getStartTime(), appState.getUser(), dummyContext,
-            RMAppState.FINISHED, "appDiagnostics", 1234, null);
+            RMAppState.FINISHED, "appDiagnostics", 123, 1234, null);
     store.updateApplicationState(dummyApp);
 
     ApplicationAttemptId dummyAttemptId =
@@ -396,7 +397,8 @@ public class RMStateStoreTestBase {
             oldAttemptState.getStartTime(), RMAppAttemptState.FINISHED,
             "myTrackingUrl", "attemptDiagnostics",
             FinalApplicationStatus.SUCCEEDED, 111,
-            oldAttemptState.getFinishTime(), new HashMap<>(), new HashMap<>());
+            oldAttemptState.getFinishTime(), new HashMap<>(), new HashMap<>(),
+            0);
     store.updateApplicationAttemptState(dummyAttempt);
 
     // let things settle down

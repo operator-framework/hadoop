@@ -225,11 +225,35 @@
 </property>
 
 <property>
+  <name>hadoop.security.group.mapping.ldap.num.attempts</name>
+  <value>3</value>
+  <description>
+    This property is the number of attempts to be made for LDAP operations.
+    If this limit is exceeded, LdapGroupsMapping will return an empty
+    group list.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.group.mapping.ldap.num.attempts.before.failover</name>
+  <value>3</value>
+  <description>
+    This property is the number of attempts to be made for LDAP operations
+    using a single LDAP instance. If multiple LDAP servers are configured
+    and this number of failed operations is reached, we will switch to the
+    next LDAP server. The configuration for the overall number of attempts
+    will still be respected, failover will thus be performed only if this
+    property is less than hadoop.security.group.mapping.ldap.num.attempts.
+  </description>
+</property>
+
+<property>
   <name>hadoop.security.group.mapping.ldap.url</name>
   <value></value>
   <description>
-    The URL of the LDAP server to use for resolving user groups when using
-    the LdapGroupsMapping user to group mapping.
+    The URL of the LDAP server(s) to use for resolving user groups when using
+    the LdapGroupsMapping user to group mapping. Supports configuring multiple
+    LDAP servers via a comma-separated list.
   </description>
 </property>
 
@@ -553,6 +577,22 @@
     </description>
 </property>
 
+  <property>
+    <name>hadoop.service.shutdown.timeout</name>
+    <value>30s</value>
+    <description>
+      Timeout to wait for each shutdown operation to complete.
+      If a hook takes longer than this time to complete, it will be interrupted,
+      so the service will shutdown. This allows the service shutdown
+      to recover from a blocked operation.
+      Some shutdown hooks may need more time than this, for example when
+      a large amount of data needs to be uploaded to an object store.
+      In this situation: increase the timeout.
+
+      The minimum duration of the timeout is 1 second, "1s".
+    </description>
+</property>
+
 <property>
   <name>hadoop.rpc.protection</name>
   <value>authentication</value>
@@ -583,9 +623,17 @@
       secret$
       password$
       ssl.keystore.pass$
-      fs.s3.*[Ss]ecret.?[Kk]ey
+      fs.s3a.server-side-encryption.key
       fs.s3a.*.server-side-encryption.key
+      fs.s3a.secret.key
+      fs.s3a.*.secret.key
+      fs.s3a.session.key
+      fs.s3a.*.session.key
+      fs.s3a.session.token
+      fs.s3a.*.session.token
       fs.azure.account.key.*
+      fs.azure.oauth2.*
+      fs.adl.oauth2.*
       credential$
       oauth.*token$
       hadoop.security.sensitive-config-keys
@@ -634,6 +682,15 @@
   <name>hadoop.security.auth_to_local</name>
   <value></value>
   <description>Maps kerberos principals to local user names</description>
+</property>
+
+<property>
+  <name>hadoop.security.auth_to_local.mechanism</name>
+  <value>hadoop</value>
+  <description>The mechanism by which auth_to_local rules are evaluated.
+    If set to 'hadoop' it will not allow resulting local user names to have
+    either '@' or '/'. If set to 'MIT' it will follow MIT evaluation rules
+    and the restrictions of 'hadoop' do not apply.</description>
 </property>
 
 <property>
@@ -966,8 +1023,8 @@
         fs.s3a.access.key and fs.s3a.secret.key.
     2. com.amazonaws.auth.EnvironmentVariableCredentialsProvider: supports
         configuration of AWS access key ID and secret access key in
-        environment variables named AWS_ACCESS_KEY_ID and
-        AWS_SECRET_ACCESS_KEY, as documented in the AWS SDK.
+        environment variables named AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+        and AWS_SESSION_TOKEN as documented in the AWS SDK.
     3. com.amazonaws.auth.InstanceProfileCredentialsProvider: supports use
         of instance profile credentials if running in an EC2 VM.
   </description>
@@ -2034,7 +2091,7 @@
   <value>${user.home}/hadoop-http-auth-signature-secret</value>
   <description>
     The signature secret for signing the authentication tokens.
-    The same secret should be used for JT/NN/DN/TT configurations.
+    The same secret should be used for RM/NM/NN/DN configurations.
   </description>
 </property>
 
@@ -2356,6 +2413,14 @@
 </property>
 
 <property>
+  <name>ha.failover-controller.active-standby-elector.zk.op.retries</name>
+  <value>3</value>
+  <description>
+    The number of zookeeper operation retry times in ActiveStandbyElector
+  </description>
+</property>
+
+<property>
   <name>ha.failover-controller.cli-check.rpc-timeout.ms</name>
   <value>20000</value>
   <description>
@@ -2652,22 +2717,6 @@
 
 
   <!-- YARN registry -->
-
-  <property>
-    <name>hadoop.registry.rm.enabled</name>
-    <value>false</value>
-    <description>
-      Is the registry enabled in the YARN Resource Manager?
-
-      If true, the YARN RM will, as needed.
-      create the user and system paths, and purge
-      service records when containers, application attempts
-      and applications complete.
-
-      If false, the paths must be created by other means,
-      and no automatic cleanup of service records will take place.
-    </description>
-  </property>
 
   <property>
     <name>hadoop.registry.zk.root</name>
@@ -3047,6 +3096,35 @@
     <value>false</value>
     <description>When set to true Clients will bind socket to wildcard
       address. (i.e 0.0.0.0)
+    </description>
+  </property>
+
+  <property>
+    <name>fs.getspaceused.classname</name>
+    <value></value>
+    <description>
+      The class that can tell estimate much space is used in a directory.
+      There are four impl classes that being supported:
+      org.apache.hadoop.fs.DU(default), org.apache.hadoop.fs.WindowsGetSpaceUsed
+      org.apache.hadoop.fs.DFCachingGetSpaceUsed and
+      org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.ReplicaCachingGetSpaceUsed.
+      And the ReplicaCachingGetSpaceUsed impl class only used in HDFS module.
+    </description>
+  </property>
+
+  <property>
+    <name>fs.getspaceused.jitterMillis</name>
+    <value>60000</value>
+    <description>
+      fs space usage statistics refresh jitter in msec.
+    </description>
+  </property>
+
+  <property>
+    <name>hadoop.http.sni.host.check.enabled</name>
+    <value>false</value>
+    <description>
+      Enable Server Name Indication (SNI) host check for HTTPS enabled server.
     </description>
   </property>
 </configuration>

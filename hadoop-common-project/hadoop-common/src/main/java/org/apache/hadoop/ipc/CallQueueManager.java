@@ -192,13 +192,11 @@ public class CallQueueManager<E extends Schedulable>
     return scheduler.shouldBackOff(e);
   }
 
-  void addResponseTime(String name, int priorityLevel, int queueTime,
-      int processingTime) {
-    scheduler.addResponseTime(name, priorityLevel, queueTime, processingTime);
+  void addResponseTime(String name, Schedulable e, ProcessingDetails details) {
+    scheduler.addResponseTime(name, e, details);
   }
 
   // This should be only called once per call and cached in the call object
-  // each getPriorityLevel call will increment the counter for the caller
   int getPriorityLevel(Schedulable e) {
     return scheduler.getPriorityLevel(e);
   }
@@ -221,12 +219,21 @@ public class CallQueueManager<E extends Schedulable>
     } else if (shouldBackOff(e)) {
       throwBackoff();
     } else {
-      add(e);
+      // No need to re-check backoff criteria since they were just checked
+      addInternal(e, false);
     }
   }
 
   @Override
   public boolean add(E e) {
+    return addInternal(e, true);
+  }
+
+  @VisibleForTesting
+  boolean addInternal(E e, boolean checkBackoff) {
+    if (checkBackoff && isClientBackoffEnabled() && shouldBackOff(e)) {
+      throwBackoff();
+    }
     try {
       return putRef.get().add(e);
     } catch (CallQueueOverflowException ex) {

@@ -80,12 +80,10 @@ import org.eclipse.jetty.server.RequestLog;
 import org.eclipse.jetty.server.SecureRequestCustomizer;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
-import org.eclipse.jetty.server.SessionManager;
 import org.eclipse.jetty.server.SslConnectionFactory;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.server.handler.HandlerCollection;
 import org.eclipse.jetty.server.handler.RequestLogHandler;
-import org.eclipse.jetty.server.session.AbstractSessionManager;
 import org.eclipse.jetty.server.session.SessionHandler;
 import org.eclipse.jetty.servlet.DefaultServlet;
 import org.eclipse.jetty.servlet.FilterHolder;
@@ -139,10 +137,18 @@ public final class HttpServer2 implements FilterContainer {
       "hadoop.http.selector.count";
   // -1 to use default behavior of setting count based on CPU core count
   public static final int HTTP_SELECTOR_COUNT_DEFAULT = -1;
+  // idle timeout in milliseconds
+  public static final String HTTP_IDLE_TIMEOUT_MS_KEY =
+      "hadoop.http.idle_timeout.ms";
+  public static final int HTTP_IDLE_TIMEOUT_MS_DEFAULT = 10000;
   public static final String HTTP_TEMP_DIR_KEY = "hadoop.http.temp.dir";
 
   public static final String FILTER_INITIALIZER_PROPERTY
       = "hadoop.http.filter.initializers";
+
+  public static final String HTTP_SNI_HOST_CHECK_ENABLED_KEY
+      = "hadoop.http.sni.host.check.enabled";
+  public static final boolean HTTP_SNI_HOST_CHECK_ENABLED_DEFAULT = false;
 
   // The ServletContext attribute where the daemon Configuration
   // gets stored.
@@ -211,6 +217,8 @@ public final class HttpServer2 implements FilterContainer {
 
     private boolean xFrameEnabled;
     private XFrameOption xFrameOption = XFrameOption.SAMEORIGIN;
+
+    private boolean sniHostCheckEnabled;
 
     public Builder setName(String name){
       this.name = name;
@@ -357,6 +365,17 @@ public final class HttpServer2 implements FilterContainer {
     }
 
     /**
+     * Enable or disable sniHostCheck.
+     *
+     * @param sniHostCheckEnabled Enable sniHostCheck if true, else disable it.
+     * @return Builder.
+     */
+    public Builder setSniHostCheckEnabled(boolean sniHostCheckEnabled) {
+      this.sniHostCheckEnabled = sniHostCheckEnabled;
+      return this;
+    }
+
+    /**
      * A wrapper of {@link Configuration#getPassword(String)}. It returns
      * <code>String</code> instead of <code>char[]</code>.
      *
@@ -437,6 +456,8 @@ public final class HttpServer2 implements FilterContainer {
       int responseHeaderSize = conf.getInt(
           HTTP_MAX_RESPONSE_HEADER_SIZE_KEY,
           HTTP_MAX_RESPONSE_HEADER_SIZE_DEFAULT);
+      int idleTimeout = conf.getInt(HTTP_IDLE_TIMEOUT_MS_KEY,
+          HTTP_IDLE_TIMEOUT_MS_DEFAULT);
 
       HttpConfiguration httpConfig = new HttpConfiguration();
       httpConfig.setRequestHeaderSize(requestHeaderSize);
@@ -445,6 +466,13 @@ public final class HttpServer2 implements FilterContainer {
 
       int backlogSize = conf.getInt(HTTP_SOCKET_BACKLOG_SIZE_KEY,
           HTTP_SOCKET_BACKLOG_SIZE_DEFAULT);
+
+      // If setSniHostCheckEnabled() is used to enable SNI hostname check,
+      // configuration lookup is skipped.
+      if (!sniHostCheckEnabled) {
+        sniHostCheckEnabled = conf.getBoolean(HTTP_SNI_HOST_CHECK_ENABLED_KEY,
+            HTTP_SNI_HOST_CHECK_ENABLED_DEFAULT);
+      }
 
       for (URI ep : endpoints) {
         final ServerConnector connector;
@@ -462,6 +490,7 @@ public final class HttpServer2 implements FilterContainer {
         connector.setHost(ep.getHost());
         connector.setPort(ep.getPort() == -1 ? 0 : ep.getPort());
         connector.setAcceptQueueSize(backlogSize);
+        connector.setIdleTimeout(idleTimeout);
         server.addListener(connector);
       }
       server.loadListeners();
@@ -475,17 +504,25 @@ public final class HttpServer2 implements FilterContainer {
           conf.getInt(HTTP_SELECTOR_COUNT_KEY, HTTP_SELECTOR_COUNT_DEFAULT));
       ConnectionFactory connFactory = new HttpConnectionFactory(httpConfig);
       conn.addConnectionFactory(connFactory);
-      configureChannelConnector(conn);
+      if(Shell.WINDOWS) {
+        // result of setting the SO_REUSEADDR flag is different on Windows
+        // http://msdn.microsoft.com/en-us/library/ms740621(v=vs.85).aspx
+        // without this 2 NN's can start on the same machine and listen on
+        // the same port with indeterminate routing of incoming requests to them
+        conn.setReuseAddress(false);
+      }
       return conn;
     }
 
     private ServerConnector createHttpsChannelConnector(
         Server server, HttpConfiguration httpConfig) {
       httpConfig.setSecureScheme(HTTPS_SCHEME);
-      httpConfig.addCustomizer(new SecureRequestCustomizer());
+      httpConfig.addCustomizer(
+          new SecureRequestCustomizer(sniHostCheckEnabled));
       ServerConnector conn = createHttpChannelConnector(server, httpConfig);
 
-      SslContextFactory sslContextFactory = new SslContextFactory();
+      SslContextFactory.Server sslContextFactory =
+          new SslContextFactory.Server();
       sslContextFactory.setNeedClientAuth(needsClientAuth);
       sslContextFactory.setKeyManagerPassword(keyPassword);
       if (keyStore != null) {
@@ -553,12 +590,9 @@ public final class HttpServer2 implements FilterContainer {
       threadPool.setMaxThreads(maxThreads);
     }
 
-    SessionManager sm = webAppContext.getSessionHandler().getSessionManager();
-    if (sm instanceof AbstractSessionManager) {
-      AbstractSessionManager asm = (AbstractSessionManager)sm;
-      asm.setHttpOnly(true);
-      asm.getSessionCookieConfig().setSecure(true);
-    }
+    SessionHandler handler = webAppContext.getSessionHandler();
+    handler.setHttpOnly(true);
+    handler.getSessionCookieConfig().setSecure(true);
 
     ContextHandlerCollection contexts = new ContextHandlerCollection();
     RequestLog requestLog = HttpRequestLog.getRequestLog(name);
@@ -654,17 +688,6 @@ public final class HttpServer2 implements FilterContainer {
                  Collections.<String, String> emptyMap(), new String[] { "/*" });
   }
 
-  private static void configureChannelConnector(ServerConnector c) {
-    c.setIdleTimeout(10000);
-    if(Shell.WINDOWS) {
-      // result of setting the SO_REUSEADDR flag is different on Windows
-      // http://msdn.microsoft.com/en-us/library/ms740621(v=vs.85).aspx
-      // without this 2 NN's can start on the same machine and listen on
-      // the same port with indeterminate routing of incoming requests to them
-      c.setReuseAddress(false);
-    }
-  }
-
   /** Get an array of FilterConfiguration specified in the conf */
   private static FilterInitializer[] getFilterInitializers(Configuration conf) {
     if (conf == null) {
@@ -711,12 +734,8 @@ public final class HttpServer2 implements FilterContainer {
       }
       logContext.setDisplayName("logs");
       SessionHandler handler = new SessionHandler();
-      SessionManager sm = handler.getSessionManager();
-      if (sm instanceof AbstractSessionManager) {
-        AbstractSessionManager asm = (AbstractSessionManager) sm;
-        asm.setHttpOnly(true);
-        asm.getSessionCookieConfig().setSecure(true);
-      }
+      handler.setHttpOnly(true);
+      handler.getSessionCookieConfig().setSecure(true);
       logContext.setSessionHandler(handler);
       setContextAttributes(logContext, conf);
       addNoCacheFilter(logContext);
@@ -733,12 +752,8 @@ public final class HttpServer2 implements FilterContainer {
     params.put("org.eclipse.jetty.servlet.Default.dirAllowed", "false");
     params.put("org.eclipse.jetty.servlet.Default.gzip", "true");
     SessionHandler handler = new SessionHandler();
-    SessionManager sm = handler.getSessionManager();
-    if (sm instanceof AbstractSessionManager) {
-      AbstractSessionManager asm = (AbstractSessionManager) sm;
-      asm.setHttpOnly(true);
-      asm.getSessionCookieConfig().setSecure(true);
-    }
+    handler.setHttpOnly(true);
+    handler.getSessionCookieConfig().setSecure(true);
     staticContext.setSessionHandler(handler);
     setContextAttributes(staticContext, conf);
     defaultContexts.put(staticContext, true);
@@ -784,12 +799,27 @@ public final class HttpServer2 implements FilterContainer {
    */
   public void addJerseyResourcePackage(final String packageName,
       final String pathSpec) {
+    addJerseyResourcePackage(packageName, pathSpec,
+        Collections.<String, String>emptyMap());
+  }
+
+  /**
+   * Add a Jersey resource package.
+   * @param packageName The Java package name containing the Jersey resource.
+   * @param pathSpec The path spec for the servlet
+   * @param params properties and features for ResourceConfig
+   */
+  public void addJerseyResourcePackage(final String packageName,
+      final String pathSpec, Map<String, String> params) {
     LOG.info("addJerseyResourcePackage: packageName=" + packageName
         + ", pathSpec=" + pathSpec);
     final ServletHolder sh = new ServletHolder(ServletContainer.class);
     sh.setInitParameter("com.sun.jersey.config.property.resourceConfigClass",
         "com.sun.jersey.api.core.PackagesResourceConfig");
     sh.setInitParameter("com.sun.jersey.config.property.packages", packageName);
+    for (Map.Entry<String, String> entry : params.entrySet()) {
+      sh.setInitParameter(entry.getKey(), entry.getValue());
+    }
     webAppContext.addServlet(sh, pathSpec);
   }
 
@@ -1119,7 +1149,6 @@ public final class HttpServer2 implements FilterContainer {
       params.put("kerberos.keytab", httpKeytab);
     }
     params.put(AuthenticationFilter.AUTH_TYPE, "kerberos");
-
     defineFilter(webAppContext, SPNEGO_FILTER,
                  AuthenticationFilter.class.getName(), params, null);
   }
@@ -1192,7 +1221,7 @@ public final class HttpServer2 implements FilterContainer {
    * @return
    */
   private static BindException constructBindException(ServerConnector listener,
-      BindException ex) {
+      IOException ex) {
     BindException be = new BindException("Port in use: "
         + listener.getHost() + ":" + listener.getPort());
     if (ex != null) {
@@ -1214,7 +1243,7 @@ public final class HttpServer2 implements FilterContainer {
       try {
         bindListener(listener);
         break;
-      } catch (BindException ex) {
+      } catch (IOException ex) {
         if (port == 0 || !findPort) {
           throw constructBindException(listener, ex);
         }
@@ -1234,13 +1263,13 @@ public final class HttpServer2 implements FilterContainer {
    */
   private void bindForPortRange(ServerConnector listener, int startPort)
       throws Exception {
-    BindException bindException = null;
+    IOException ioException = null;
     try {
       bindListener(listener);
       return;
-    } catch (BindException ex) {
+    } catch (IOException ex) {
       // Ignore exception.
-      bindException = ex;
+      ioException = ex;
     }
     for(Integer port : portRanges) {
       if (port == startPort) {
@@ -1253,10 +1282,10 @@ public final class HttpServer2 implements FilterContainer {
         return;
       } catch (BindException ex) {
         // Ignore exception. Move to next port.
-        bindException = ex;
+        ioException = ex;
       }
     }
-    throw constructBindException(listener, bindException);
+    throw constructBindException(listener, ioException);
   }
 
   /**

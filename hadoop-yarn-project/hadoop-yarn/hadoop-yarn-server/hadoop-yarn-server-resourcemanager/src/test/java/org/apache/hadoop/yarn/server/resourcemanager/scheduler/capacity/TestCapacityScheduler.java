@@ -40,12 +40,14 @@ import java.util.Map;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CyclicBarrier;
 
+import com.google.common.collect.Sets;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.Groups;
 import org.apache.hadoop.security.ShellBasedUnixGroupsMapping;
 import org.apache.hadoop.security.TestGroupsCaching;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -76,6 +78,7 @@ import org.apache.hadoop.yarn.api.records.QueueInfo;
 import org.apache.hadoop.yarn.api.records.QueueState;
 import org.apache.hadoop.yarn.api.records.QueueUserACLInfo;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.api.records.ResourceOption;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.api.records.UpdateContainerRequest;
@@ -105,9 +108,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.TestAMAuthorization.MockRMW
 import org.apache.hadoop.yarn.server.resourcemanager.TestAMAuthorization.MyContainerManager;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NullRMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
-
-import org.apache.hadoop.yarn.server.resourcemanager.placement
-    .UserGroupMappingPlacementRule;
+import org.apache.hadoop.yarn.server.resourcemanager.resource.TestResourceProfiles;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppMetrics;
@@ -123,8 +124,10 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerImpl
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeResourceUpdateEvent;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueResourceQuotas;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Allocation;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.CSQueueMetricsForCustomResources;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ContainerUpdates;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
@@ -132,6 +135,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplicat
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplicationAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNodeReport;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.TestQueueMetricsForCustomResources;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.TestSchedulerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.allocator.AllocationState;
@@ -150,6 +154,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeUpdateS
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement.SimpleCandidateNodeSet;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy.FairOrderingPolicy;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy.IteratorSelector;
 import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.server.resourcemanager.security.NMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
@@ -183,8 +188,11 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
   private ResourceManager resourceManager = null;
   private RMContext mockContext;
 
+  private static final double DELTA = 0.000001;
+
   @Before
   public void setUp() throws Exception {
+    ResourceUtils.resetResourceTypes(new Configuration());
     resourceManager = new ResourceManager() {
       @Override
       protected RMNodeLabelsManager createNodeLabelManager() {
@@ -488,7 +496,7 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
     application1.schedule();
     checkApplicationResourceUsage(3 * GB, application1);
     checkNodeResourceUsage(4 * GB, nm0);
-    LOG.info("--- START: testNotAssignMultiple ---");
+    LOG.info("--- END: testNotAssignMultiple ---");
   }
 
   @Test
@@ -590,7 +598,7 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
     application1.schedule();
     checkApplicationResourceUsage(7 * GB, application1);
     checkNodeResourceUsage(10 * GB, nm0);
-    LOG.info("--- START: testAssignMultiple ---");
+    LOG.info("--- END: testAssignMultiple ---");
   }
 
   private void nodeUpdate(ResourceManager rm, NodeManager nm) {
@@ -958,6 +966,45 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
   }
 
   @Test
+  public void testParseQueueWithAbsoluteResource() {
+    String childQueue = "testQueue";
+    String labelName = "testLabel";
+
+    CapacityScheduler cs = new CapacityScheduler();
+    cs.setConf(new YarnConfiguration());
+    cs.setRMContext(resourceManager.getRMContext());
+    CapacitySchedulerConfiguration conf = new CapacitySchedulerConfiguration();
+
+    conf.setQueues("root", new String[] {childQueue});
+    conf.setCapacity("root." + childQueue, "[memory=20480,vcores=200]");
+    conf.setAccessibleNodeLabels("root." + childQueue,
+        Sets.newHashSet(labelName));
+    conf.setCapacityByLabel("root", labelName, "[memory=10240,vcores=100]");
+    conf.setCapacityByLabel("root." + childQueue, labelName,
+        "[memory=4096,vcores=10]");
+
+    cs.init(conf);
+    cs.start();
+
+    Resource rootQueueLableCapacity =
+        cs.getQueue("root").getQueueResourceQuotas()
+            .getConfiguredMinResource(labelName);
+    assertEquals(10240, rootQueueLableCapacity.getMemorySize());
+    assertEquals(100, rootQueueLableCapacity.getVirtualCores());
+
+    QueueResourceQuotas childQueueQuotas =
+        cs.getQueue(childQueue).getQueueResourceQuotas();
+    Resource childQueueCapacity = childQueueQuotas.getConfiguredMinResource();
+    assertEquals(20480, childQueueCapacity.getMemorySize());
+    assertEquals(200, childQueueCapacity.getVirtualCores());
+
+    Resource childQueueLabelCapacity =
+        childQueueQuotas.getConfiguredMinResource(labelName);
+    assertEquals(4096, childQueueLabelCapacity.getMemorySize());
+    assertEquals(10, childQueueLabelCapacity.getVirtualCores());
+  }
+
+  @Test
   public void testReconnectedNode() throws Exception {
     CapacitySchedulerConfiguration csConf =
         new CapacitySchedulerConfiguration();
@@ -1211,8 +1258,9 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
     //This happens because app2 has no demand/a magnitude of NaN, which
     //results in app1 and app2 being equal in the fairness comparison and
     //failling back to fifo (start) ordering
-    assertEquals(q.getOrderingPolicy().getAssignmentIterator().next().getId(),
-      appId1.toString());
+    assertEquals(q.getOrderingPolicy().getAssignmentIterator(
+        IteratorSelector.EMPTY_ITERATOR_SELECTOR).next().getId(),
+        appId1.toString());
 
     //Now, allocate for app2 (this would be the first/AM allocation)
     ResourceRequest r2 = TestUtils.createResourceRequest(ResourceRequest.ANY, 1*GB, 1, true, priority, recordFactory);
@@ -1224,8 +1272,9 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
     //verify re-ordering based on the allocation alone
 
     //Now, the first app for assignment is app2
-    assertEquals(q.getOrderingPolicy().getAssignmentIterator().next().getId(),
-      appId2.toString());
+    assertEquals(q.getOrderingPolicy().getAssignmentIterator(
+        IteratorSelector.EMPTY_ITERATOR_SELECTOR).next().getId(),
+        appId2.toString());
 
     rm.stop();
   }
@@ -4770,6 +4819,7 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
         "a1" +"=" + "agroup" + "");
     config.set(CapacitySchedulerConfiguration.QUEUE_MAPPING,
         "g:agroup:%user");
+    Groups.getUserToGroupsMappingServiceWithLoadedConfiguration(config);
 
     MockRM rm = new MockRM(config);
     rm.start();
@@ -4804,7 +4854,8 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
     Assert.assertEquals(100, cs.checkAndGetApplicationLifetime("default", 100));
     Assert.assertEquals(defaultLifetime,
         cs.checkAndGetApplicationLifetime("default", -1));
-    Assert.assertEquals(0, cs.checkAndGetApplicationLifetime("default", 0));
+    Assert.assertEquals(defaultLifetime,
+        cs.checkAndGetApplicationLifetime("default", 0));
     Assert.assertEquals(maxLifetime,
         cs.getMaximumApplicationLifetime("default"));
 
@@ -4824,8 +4875,10 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
     defaultLifetime = 0;
     cs = setUpCSQueue(maxLifetime, defaultLifetime);
     Assert.assertEquals(100, cs.checkAndGetApplicationLifetime("default", 100));
-    Assert.assertEquals(-1, cs.checkAndGetApplicationLifetime("default", -1));
-    Assert.assertEquals(0, cs.checkAndGetApplicationLifetime("default", 0));
+    Assert.assertEquals(defaultLifetime,
+        cs.checkAndGetApplicationLifetime("default", -1));
+    Assert.assertEquals(defaultLifetime,
+        cs.checkAndGetApplicationLifetime("default", 0));
 
     maxLifetime = 10;
     defaultLifetime = -1;
@@ -4846,6 +4899,16 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
       Assert.assertTrue(
           ye.getMessage().contains("can't exceed maximum lifetime"));
     }
+
+    maxLifetime = -1;
+    defaultLifetime = 10;
+    cs = setUpCSQueue(maxLifetime, defaultLifetime);
+    Assert.assertEquals(100,
+        cs.checkAndGetApplicationLifetime("default", 100));
+    Assert.assertEquals(defaultLifetime,
+        cs.checkAndGetApplicationLifetime("default", -1));
+    Assert.assertEquals(defaultLifetime,
+        cs.checkAndGetApplicationLifetime("default", 0));
   }
 
   private CapacityScheduler setUpCSQueue(long maxLifetime,

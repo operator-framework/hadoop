@@ -71,7 +71,6 @@ public class LogAggregationService extends AbstractService implements
 
   private static final Logger LOG =
        LoggerFactory.getLogger(LogAggregationService.class);
-  private static final long MIN_LOG_ROLLING_INTERVAL = 3600;
   // This configuration is for debug and test purpose. By setting
   // this configuration as true. We can break the lower bound of
   // NM_LOG_AGGREGATION_ROLL_MONITORING_INTERVAL_SECONDS.
@@ -113,33 +112,10 @@ public class LogAggregationService extends AbstractService implements
             .setNameFormat("LogAggregationService #%d")
             .build());
 
-    rollingMonitorInterval = conf.getLong(
-        YarnConfiguration.NM_LOG_AGGREGATION_ROLL_MONITORING_INTERVAL_SECONDS,
-        YarnConfiguration.DEFAULT_NM_LOG_AGGREGATION_ROLL_MONITORING_INTERVAL_SECONDS);
-
-    boolean logAggregationDebugMode =
-        conf.getBoolean(NM_LOG_AGGREGATION_DEBUG_ENABLED, false);
-
-    if (rollingMonitorInterval > 0
-        && rollingMonitorInterval < MIN_LOG_ROLLING_INTERVAL) {
-      if (logAggregationDebugMode) {
-        LOG.info("Log aggregation debug mode enabled. rollingMonitorInterval = "
-            + rollingMonitorInterval);
-      } else {
-        LOG.warn("rollingMonitorIntervall should be more than or equal to "
-            + MIN_LOG_ROLLING_INTERVAL + " seconds. Using "
-            + MIN_LOG_ROLLING_INTERVAL + " seconds instead.");
-        this.rollingMonitorInterval = MIN_LOG_ROLLING_INTERVAL;
-      }
-    } else if (rollingMonitorInterval <= 0) {
-      LOG.info("rollingMonitorInterval is set as " + rollingMonitorInterval
-          + ". The log rolling monitoring interval is disabled. "
-          + "The logs will be aggregated after this application is finished.");
-    } else {
-      LOG.info("rollingMonitorInterval is set as " + rollingMonitorInterval
-          + ". The logs will be aggregated every " + rollingMonitorInterval
-          + " seconds");
-    }
+    rollingMonitorInterval = calculateRollingMonitorInterval(conf);
+    LOG.info("rollingMonitorInterval is set as {}. The logs will be " +
+        "aggregated every {} seconds", rollingMonitorInterval,
+        rollingMonitorInterval);
 
     super.serviceInit(conf);
   }
@@ -413,6 +389,10 @@ public class LogAggregationService extends AbstractService implements
     return this.nodeId;
   }
 
+  @VisibleForTesting
+  public long getRollingMonitorInterval() {
+    return rollingMonitorInterval;
+  }
 
   private int getAggregatorThreadPoolSize(Configuration conf) {
     int threadPoolSize;

@@ -15,7 +15,7 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
-                      http://maven.apache.org/xsd/maven-4.0.0.xsd">
+                      https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>org.apache.hadoop</groupId>
@@ -352,6 +352,20 @@
     </resources>
     <plugins>
       <plugin>
+        <groupId>org.xolstice.maven.plugins</groupId>
+        <artifactId>protobuf-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>src-compile-protoc</id>
+            <configuration><skip>false</skip></configuration>
+          </execution>
+          <execution>
+            <id>src-test-compile-protoc</id>
+            <configuration><skip>false</skip></configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
         <groupId>org.apache.hadoop</groupId>
         <artifactId>hadoop-maven-plugins</artifactId>
         <executions>
@@ -367,58 +381,6 @@
                 <includes>
                   <include>java/**/*.java</include>
                   <include>proto/**/*.proto</include>
-                </includes>
-              </source>
-            </configuration>
-          </execution>
-          <execution>
-            <id>compile-protoc</id>
-            <goals>
-              <goal>protoc</goal>
-            </goals>
-            <configuration>
-              <protocVersion>${protobuf.version}</protocVersion>
-              <protocCommand>${protoc.path}</protocCommand>
-              <imports>
-                <param>${basedir}/src/main/proto</param>
-              </imports>
-              <source>
-                <directory>${basedir}/src/main/proto</directory>
-                <includes>
-                  <include>HAServiceProtocol.proto</include>
-                  <include>IpcConnectionContext.proto</include>
-                  <include>ProtocolInfo.proto</include>
-                  <include>RpcHeader.proto</include>
-                  <include>ZKFCProtocol.proto</include>
-                  <include>ProtobufRpcEngine.proto</include>
-                  <include>Security.proto</include>
-                  <include>GetUserMappingsProtocol.proto</include>
-                  <include>TraceAdmin.proto</include>
-                  <include>RefreshAuthorizationPolicyProtocol.proto</include>
-                  <include>RefreshUserMappingsProtocol.proto</include>
-                  <include>RefreshCallQueueProtocol.proto</include>
-                  <include>GenericRefreshProtocol.proto</include>
-                  <include>FSProtos.proto</include>
-                </includes>
-              </source>
-            </configuration>
-          </execution>
-          <execution>
-            <id>compile-test-protoc</id>
-            <goals>
-              <goal>test-protoc</goal>
-            </goals>
-            <configuration>
-              <protocVersion>${protobuf.version}</protocVersion>
-              <protocCommand>${protoc.path}</protocCommand>
-              <imports>
-                <param>${basedir}/src/test/proto</param>
-              </imports>
-              <source>
-                <directory>${basedir}/src/test/proto</directory>
-                <includes>
-                  <include>test.proto</include>
-                  <include>test_rpc_service.proto</include>
                 </includes>
               </source>
             </configuration>
@@ -708,6 +670,8 @@
                     <REQUIRE_ISAL>${require.isal} </REQUIRE_ISAL>
                     <CUSTOM_ISAL_PREFIX>${isal.prefix} </CUSTOM_ISAL_PREFIX>
                     <CUSTOM_ISAL_LIB>${isal.lib} </CUSTOM_ISAL_LIB>
+                    <REQUIRE_PMDK>${require.pmdk}</REQUIRE_PMDK>
+                    <CUSTOM_PMDK_LIB>${pmdk.lib}</CUSTOM_PMDK_LIB>
                     <REQUIRE_OPENSSL>${require.openssl} </REQUIRE_OPENSSL>
                     <CUSTOM_OPENSSL_PREFIX>${openssl.prefix} </CUSTOM_OPENSSL_PREFIX>
                     <CUSTOM_OPENSSL_LIB>${openssl.lib} </CUSTOM_OPENSSL_LIB>
@@ -765,7 +729,7 @@
         <zstd.prefix></zstd.prefix>
         <zstd.lib></zstd.lib>
         <zstd.include></zstd.include>
-        <require.ztsd>false</require.ztsd>
+        <require.zstd>false</require.zstd>
         <bundle.zstd.in.bin>true</bundle.zstd.in.bin>
         <openssl.prefix></openssl.prefix>
         <openssl.lib></openssl.lib>
@@ -905,7 +869,7 @@
                     <argument>/p:CustomZstdPrefix=${zstd.prefix}</argument>
                     <argument>/p:CustomZstdLib=${zstd.lib}</argument>
                     <argument>/p:CustomZstdInclude=${zstd.include}</argument>
-                    <argument>/p:RequireZstd=${require.ztsd}</argument>
+                    <argument>/p:RequireZstd=${require.zstd}</argument>
                     <argument>/p:CustomOpensslPrefix=${openssl.prefix}</argument>
                     <argument>/p:CustomOpensslLib=${openssl.lib}</argument>
                     <argument>/p:CustomOpensslInclude=${openssl.include}</argument>
@@ -970,7 +934,7 @@
                     <chmod file="${kdc.resource.dir}/killKdc.sh" perm="775" />
                     <exec dir="${kdc.resource.dir}" executable= "./killKdc.sh" />
                     <mkdir dir="${project.build.directory}/test-classes/kdc/downloads"/>
-                    <get src="http://newverhost.com/pub//directory/apacheds/unstable/1.5/1.5.7/apacheds-1.5.7.tar.gz" dest="${basedir}/target/test-classes/kdc/downloads" verbose="true" skipexisting="true"/>
+                    <get src="https://newverhost.com/pub//directory/apacheds/unstable/1.5/1.5.7/apacheds-1.5.7.tar.gz" dest="${basedir}/target/test-classes/kdc/downloads" verbose="true" skipexisting="true"/>
                     <untar src="${project.build.directory}/test-classes/kdc/downloads/apacheds-1.5.7.tar.gz" dest="${project.build.directory}/test-classes/kdc" compression="gzip" />
 
                     <copy file="${kdc.resource.dir}/server.xml" toDir="${project.build.directory}/test-classes/kdc/apacheds_1.5.7/conf"/>

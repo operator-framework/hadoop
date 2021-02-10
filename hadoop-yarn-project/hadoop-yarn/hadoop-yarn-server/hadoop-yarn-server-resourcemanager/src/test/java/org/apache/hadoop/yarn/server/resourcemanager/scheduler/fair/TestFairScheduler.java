@@ -51,6 +51,8 @@ import org.apache.hadoop.metrics2.impl.MetricsCollectorImpl;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.security.GroupMappingServiceProvider;
+import org.apache.hadoop.security.Groups;
+import org.apache.hadoop.security.JniBasedUnixGroupsMappingWithFallback;
 import org.apache.hadoop.yarn.MockApps;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -1806,6 +1808,7 @@ public class TestFairScheduler extends FairSchedulerTestBase {
   public void testQueuePlacementWithPolicy() throws Exception {
     conf.setClass(CommonConfigurationKeys.HADOOP_SECURITY_GROUP_MAPPING,
         SimpleGroupsMapping.class, GroupMappingServiceProvider.class);
+    Groups.getUserToGroupsMappingServiceWithLoadedConfiguration(conf);
     scheduler.init(conf);
     scheduler.start();
     scheduler.reinitialize(conf, resourceManager.getRMContext());
@@ -1851,6 +1854,12 @@ public class TestFairScheduler extends FairSchedulerTestBase {
     assertEquals("root.somequeue", scheduler.getSchedulerApp(appId).getQueueName());
     appId = createSchedulingRequest(1024, "default", "otheruser");
     assertEquals("root.default", scheduler.getSchedulerApp(appId).getQueueName());
+
+    // undo the group change
+    conf.setClass(CommonConfigurationKeys.HADOOP_SECURITY_GROUP_MAPPING,
+        JniBasedUnixGroupsMappingWithFallback.class,
+        GroupMappingServiceProvider.class);
+    Groups.getUserToGroupsMappingServiceWithLoadedConfiguration(conf);
   }
 
   @Test
@@ -1903,6 +1912,7 @@ public class TestFairScheduler extends FairSchedulerTestBase {
     conf.set(FairSchedulerConfiguration.ALLOCATION_FILE, ALLOC_FILE);
     conf.setClass(CommonConfigurationKeys.HADOOP_SECURITY_GROUP_MAPPING,
         SimpleGroupsMapping.class, GroupMappingServiceProvider.class);
+    Groups.getUserToGroupsMappingServiceWithLoadedConfiguration(conf);
     PrintWriter out = new PrintWriter(new FileWriter(ALLOC_FILE));
     out.println("<?xml version=\"1.0\"?>");
     out.println("<allocations>");
@@ -1928,6 +1938,11 @@ public class TestFairScheduler extends FairSchedulerTestBase {
         "user1");
 
     assertEquals("root.user1group.user1", user1Leaf.getName());
+    // undo the group change
+    conf.setClass(CommonConfigurationKeys.HADOOP_SECURITY_GROUP_MAPPING,
+        JniBasedUnixGroupsMappingWithFallback.class,
+        GroupMappingServiceProvider.class);
+    Groups.getUserToGroupsMappingServiceWithLoadedConfiguration(conf);
   }
 
   @Test
@@ -4442,8 +4457,7 @@ public class TestFairScheduler extends FairSchedulerTestBase {
     NodeAddedSchedulerEvent nodeEvent1 = new NodeAddedSchedulerEvent(node1);
     scheduler.handle(nodeEvent1);
 
-    FSSchedulerNode node = (FSSchedulerNode)scheduler.getSchedulerNode(
-      node1.getNodeID());
+    FSSchedulerNode node = scheduler.getSchedulerNode(node1.getNodeID());
 
     NodeRemovedSchedulerEvent removeNode1 =
         new NodeRemovedSchedulerEvent(node1);
@@ -5436,5 +5450,131 @@ public class TestFairScheduler extends FairSchedulerTestBase {
         SchedulerUtils.createAbnormalContainerStatus(rmc.getContainerId(),
             SchedulerUtils.COMPLETED_APPLICATION),
         RMContainerEventType.EXPIRE);
+  }
+
+  @Test
+  public void testRestoreToExistingQueue() throws IOException {
+    conf.set(FairSchedulerConfiguration.ALLOCATION_FILE, ALLOC_FILE);
+    generateAllocationFilePercentageResource();
+
+    scheduler.init(conf);
+    scheduler.start();
+    scheduler.reinitialize(conf, resourceManager.getRMContext());
+
+    // no nodes so the resource total should be zero for all queues
+    // AM is using resources
+    Resource amResource = Resources.createResource(1024, 1);
+    // Add the app and the attempt
+    ApplicationAttemptId appAttemptId = null;
+    String queueId = "root.parent.queueA";
+    try {
+      appAttemptId = createRecoveringApplication(amResource, queueId, "user1");
+    } catch (Exception e) {
+      fail("The exception is not expected. Exception message: "
+          + e.getMessage());
+    }
+    scheduler.addApplicationAttempt(appAttemptId, false, true);
+
+    List<ApplicationAttemptId> appsInQueue =
+        scheduler.getAppsInQueue(queueId);
+    assertEquals("Number of apps in queue 'root.parent.queueA' should be one!",
+        1, appsInQueue.size());
+
+    appAttemptId = scheduler.getAppsInQueue(queueId).get(0);
+    assertNotNull("Scheduler app for appAttemptId " + appAttemptId
+        + " should not be null!", scheduler.getSchedulerApp(appAttemptId));
+
+    FSAppAttempt schedulerApp = scheduler.getSchedulerApp(appAttemptId);
+    assertNotNull("Scheduler app queueInfo for appAttemptId " + appAttemptId
+        + " should not be null!", schedulerApp.getAppSchedulingInfo());
+
+    assertTrue("There should be no requests accepted", schedulerApp
+        .getAppSchedulingInfo().getAllResourceRequests().isEmpty());
+
+    // Restore an applications with a user that has no access to the queue
+    try {
+      appAttemptId = createRecoveringApplication(amResource, queueId,
+        "usernotinacl");
+    } catch (Exception e) {
+      fail("The exception is not expected. Exception message: "
+          + e.getMessage());
+    }
+    scheduler.addApplicationAttempt(appAttemptId, false, true);
+
+    appsInQueue = scheduler.getAppsInQueue(queueId);
+    assertEquals("Number of apps in queue 'root.parent.queueA' should be two!",
+        2, appsInQueue.size());
+
+    appAttemptId = scheduler.getAppsInQueue(queueId).get(1);
+    assertNotNull("Scheduler app for appAttemptId " + appAttemptId
+        + " should not be null!", scheduler.getSchedulerApp(appAttemptId));
+
+    schedulerApp = scheduler.getSchedulerApp(appAttemptId);
+    assertNotNull("Scheduler app queueInfo for appAttemptId " + appAttemptId
+        + " should not be null!", schedulerApp.getAppSchedulingInfo());
+
+    assertTrue("There should be no requests accepted", schedulerApp
+        .getAppSchedulingInfo().getAllResourceRequests().isEmpty());
+  }
+
+  @Test
+  public void testRestoreToParentQueue() throws IOException {
+    conf.set(FairSchedulerConfiguration.ALLOCATION_FILE, ALLOC_FILE);
+    generateAllocationFilePercentageResource();
+
+    scheduler.init(conf);
+    scheduler.start();
+    scheduler.reinitialize(conf, resourceManager.getRMContext());
+
+    // no nodes so the resource total should be zero for all queues
+    // AM is using resources
+    Resource amResource = Resources.createResource(1024, 1);
+    // Add the app and the attempt, use a queue that is now a parent
+    ApplicationAttemptId appAttemptId = null;
+    String queueId = "root.parent";
+    try {
+      appAttemptId = createRecoveringApplication(amResource, queueId, "user1");
+    } catch (Exception e) {
+      fail("The exception is not expected. Exception message: "
+          + e.getMessage());
+    }
+    scheduler.addApplicationAttempt(appAttemptId, false, true);
+
+    String recoveredQueue = "root.recovery";
+    List<ApplicationAttemptId> appsInQueue =
+        scheduler.getAppsInQueue(recoveredQueue);
+    assertEquals("Number of apps in queue 'root.recovery' should be one!",
+        1, appsInQueue.size());
+
+    appAttemptId =
+        scheduler.getAppsInQueue(recoveredQueue).get(0);
+    assertNotNull("Scheduler app for appAttemptId " + appAttemptId
+        + " should not be null!", scheduler.getSchedulerApp(appAttemptId));
+
+    FSAppAttempt schedulerApp = scheduler.getSchedulerApp(appAttemptId);
+    assertNotNull("Scheduler app queueInfo for appAttemptId " + appAttemptId
+        + " should not be null!", schedulerApp.getAppSchedulingInfo());
+
+    assertTrue("There should be no requests accepted", schedulerApp
+        .getAppSchedulingInfo().getAllResourceRequests().isEmpty());
+  }
+
+  private void generateAllocationFilePercentageResource()
+      throws IOException {
+    PrintWriter out = new PrintWriter(new FileWriter(ALLOC_FILE));
+    out.println("<?xml version=\"1.0\"?>");
+    out.println("<allocations>");
+    out.println("<queue name=\"root\">");
+    out.println("<aclSubmitApps> </aclSubmitApps>");
+    out.println("<aclAdministerApps> </aclAdministerApps>");
+    out.println("<queue name=\"parent\">");
+    out.println("<maxChildResources>15.0%</maxChildResources>");
+    out.println("<queue name=\"queueA\">");
+    out.println("<aclSubmitApps>user1</aclSubmitApps>");
+    out.println("</queue>");
+    out.println("</queue>");
+    out.println("</queue>");
+    out.println("</allocations>");
+    out.close();
   }
 }

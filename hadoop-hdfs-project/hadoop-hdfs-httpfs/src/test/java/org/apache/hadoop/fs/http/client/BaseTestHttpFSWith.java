@@ -22,12 +22,15 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockStoragePolicySpi;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.ContentSummary;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileChecksum;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileSystemTestHelper;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.fs.RemoteIterator;
+import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.contract.ContractTestUtils;
 import org.apache.hadoop.fs.http.server.HttpFSServerWebApp;
 import org.apache.hadoop.fs.permission.AclEntry;
@@ -40,6 +43,7 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.HFSTestCase;
 import org.apache.hadoop.test.HadoopUsersConfTestHelper;
@@ -342,6 +346,7 @@ public abstract class BaseTestHttpFSWith extends HFSTestCase {
 
   private void testListStatus() throws Exception {
     FileSystem fs = FileSystem.get(getProxiedFSConf());
+    boolean isDFS = fs instanceof DistributedFileSystem;
     Path path = new Path(getProxiedFSTestDir(), "foo.txt");
     OutputStream os = fs.create(path);
     os.write(1);
@@ -363,6 +368,18 @@ public abstract class BaseTestHttpFSWith extends HFSTestCase {
     assertEquals(status2.getOwner(), status1.getOwner());
     assertEquals(status2.getGroup(), status1.getGroup());
     assertEquals(status2.getLen(), status1.getLen());
+    if (isDFS && status2 instanceof HdfsFileStatus) {
+      assertTrue(status1 instanceof HdfsFileStatus);
+      HdfsFileStatus hdfsFileStatus1 = (HdfsFileStatus) status1;
+      HdfsFileStatus hdfsFileStatus2 = (HdfsFileStatus) status2;
+      // Check HDFS-specific fields
+      assertEquals(hdfsFileStatus2.getChildrenNum(),
+          hdfsFileStatus1.getChildrenNum());
+      assertEquals(hdfsFileStatus2.getFileId(),
+          hdfsFileStatus1.getFileId());
+      assertEquals(hdfsFileStatus2.getStoragePolicy(),
+          hdfsFileStatus1.getStoragePolicy());
+    }
 
     FileStatus[] stati = fs.listStatus(path.getParent());
     assertEquals(1, stati.length);
@@ -374,6 +391,35 @@ public abstract class BaseTestHttpFSWith extends HFSTestCase {
     Assert.assertEquals(status2.getPath(), statl[0].getPath());
     Assert.assertEquals(statl[0].getPath().getName(), path.getName());
     Assert.assertEquals(stati[0].getPath(), statl[0].getPath());
+  }
+
+  private void testFileStatusAttr() throws Exception {
+    if (!this.isLocalFS()) {
+      // Create a directory
+      Path path = new Path("/tmp/tmp-snap-test");
+      DistributedFileSystem distributedFs = (DistributedFileSystem) FileSystem
+          .get(path.toUri(), this.getProxiedFSConf());
+      distributedFs.mkdirs(path);
+      // Get the FileSystem instance that's being tested
+      FileSystem fs = this.getHttpFSFileSystem();
+      // Check FileStatus
+      assertFalse("Snapshot should be disallowed by default",
+          fs.getFileStatus(path).isSnapshotEnabled());
+      // Allow snapshot
+      distributedFs.allowSnapshot(path);
+      // Check FileStatus
+      assertTrue("Snapshot enabled bit is not set in FileStatus",
+          fs.getFileStatus(path).isSnapshotEnabled());
+      // Disallow snapshot
+      distributedFs.disallowSnapshot(path);
+      // Check FileStatus
+      assertFalse("Snapshot enabled bit is not cleared in FileStatus",
+          fs.getFileStatus(path).isSnapshotEnabled());
+      // Cleanup
+      fs.delete(path, true);
+      fs.close();
+      distributedFs.close();
+    }
   }
 
   private static void assertSameListing(FileSystem expected, FileSystem
@@ -629,17 +675,58 @@ public abstract class BaseTestHttpFSWith extends HFSTestCase {
     fs = getHttpFSFileSystem();
     ContentSummary httpContentSummary = fs.getContentSummary(path);
     fs.close();
-    assertEquals(httpContentSummary.getDirectoryCount(),
-        hdfsContentSummary.getDirectoryCount());
-    assertEquals(httpContentSummary.getFileCount(),
-        hdfsContentSummary.getFileCount());
-    assertEquals(httpContentSummary.getLength(),
-        hdfsContentSummary.getLength());
-    assertEquals(httpContentSummary.getQuota(), hdfsContentSummary.getQuota());
-    assertEquals(httpContentSummary.getSpaceConsumed(),
-        hdfsContentSummary.getSpaceConsumed());
-    assertEquals(httpContentSummary.getSpaceQuota(),
-        hdfsContentSummary.getSpaceQuota());
+    assertEquals(hdfsContentSummary.getDirectoryCount(),
+        httpContentSummary.getDirectoryCount());
+    assertEquals(hdfsContentSummary.getErasureCodingPolicy(),
+        httpContentSummary.getErasureCodingPolicy());
+    assertEquals(hdfsContentSummary.getFileCount(),
+        httpContentSummary.getFileCount());
+    assertEquals(hdfsContentSummary.getLength(),
+        httpContentSummary.getLength());
+    assertEquals(hdfsContentSummary.getQuota(), httpContentSummary.getQuota());
+    assertEquals(hdfsContentSummary.getSpaceConsumed(),
+        httpContentSummary.getSpaceConsumed());
+    assertEquals(hdfsContentSummary.getSpaceQuota(),
+        httpContentSummary.getSpaceQuota());
+  }
+
+  private void testQuotaUsage() throws Exception {
+    if (isLocalFS()) {
+      // LocalFS doesn't support setQuota so skip here
+      return;
+    }
+
+    DistributedFileSystem dfs =
+        (DistributedFileSystem) FileSystem.get(getProxiedFSConf());
+    Path path = new Path(getProxiedFSTestDir(), "foo");
+    dfs.mkdirs(path);
+    dfs.setQuota(path, 20, 600 * 1024 * 1024);
+    for (int i = 0; i < 10; i++) {
+      dfs.createNewFile(new Path(path, "test_file_" + i));
+    }
+    FSDataOutputStream out = dfs.create(new Path(path, "test_file"));
+    out.writeUTF("Hello World");
+    out.close();
+
+    dfs.setQuotaByStorageType(path, StorageType.SSD, 100000);
+    dfs.setQuotaByStorageType(path, StorageType.DISK, 200000);
+
+    QuotaUsage hdfsQuotaUsage = dfs.getQuotaUsage(path);
+    dfs.close();
+    FileSystem fs = getHttpFSFileSystem();
+    QuotaUsage httpQuotaUsage = fs.getQuotaUsage(path);
+    fs.close();
+    assertEquals(hdfsQuotaUsage.getFileAndDirectoryCount(),
+        httpQuotaUsage.getFileAndDirectoryCount());
+    assertEquals(hdfsQuotaUsage.getQuota(), httpQuotaUsage.getQuota());
+    assertEquals(hdfsQuotaUsage.getSpaceConsumed(),
+        httpQuotaUsage.getSpaceConsumed());
+    assertEquals(hdfsQuotaUsage.getSpaceQuota(),
+        httpQuotaUsage.getSpaceQuota());
+    assertEquals(hdfsQuotaUsage.getTypeQuota(StorageType.SSD),
+        httpQuotaUsage.getTypeQuota(StorageType.SSD));
+    assertEquals(hdfsQuotaUsage.getTypeQuota(StorageType.DISK),
+        httpQuotaUsage.getTypeQuota(StorageType.DISK));
   }
   
   /** Set xattr */
@@ -1038,10 +1125,11 @@ public abstract class BaseTestHttpFSWith extends HFSTestCase {
   protected enum Operation {
     GET, OPEN, CREATE, APPEND, TRUNCATE, CONCAT, RENAME, DELETE, LIST_STATUS,
     WORKING_DIRECTORY, MKDIRS, SET_TIMES, SET_PERMISSION, SET_OWNER,
-    SET_REPLICATION, CHECKSUM, CONTENT_SUMMARY, FILEACLS, DIRACLS, SET_XATTR,
-    GET_XATTRS, REMOVE_XATTR, LIST_XATTRS, ENCRYPTION, LIST_STATUS_BATCH,
-    GETTRASHROOT, STORAGEPOLICY, ERASURE_CODING,
-    CREATE_SNAPSHOT, RENAME_SNAPSHOT, DELETE_SNAPSHOT
+    SET_REPLICATION, CHECKSUM, CONTENT_SUMMARY, QUOTA_USAGE, FILEACLS, DIRACLS,
+    SET_XATTR, GET_XATTRS, REMOVE_XATTR, LIST_XATTRS, ENCRYPTION,
+    LIST_STATUS_BATCH, GETTRASHROOT, STORAGEPOLICY, ERASURE_CODING,
+    CREATE_SNAPSHOT, RENAME_SNAPSHOT, DELETE_SNAPSHOT,
+    FILE_STATUS_ATTR
   }
 
   private void operation(Operation op) throws Exception {
@@ -1097,6 +1185,9 @@ public abstract class BaseTestHttpFSWith extends HFSTestCase {
     case CONTENT_SUMMARY:
       testContentSummary();
       break;
+    case QUOTA_USAGE:
+      testQuotaUsage();
+      break;
     case FILEACLS:
       testFileAcls();
       break;
@@ -1138,6 +1229,9 @@ public abstract class BaseTestHttpFSWith extends HFSTestCase {
       break;
     case DELETE_SNAPSHOT:
       testDeleteSnapshot();
+      break;
+    case FILE_STATUS_ATTR:
+      testFileStatusAttr();
       break;
     }
   }

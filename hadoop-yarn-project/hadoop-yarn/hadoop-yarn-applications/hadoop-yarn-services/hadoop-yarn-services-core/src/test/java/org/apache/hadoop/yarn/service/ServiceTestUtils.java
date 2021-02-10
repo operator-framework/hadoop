@@ -63,7 +63,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URL;
 import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
@@ -115,18 +114,14 @@ public class ServiceTestUtils {
     exampleApp.setName(serviceName);
     exampleApp.setVersion("v1");
     exampleApp.addComponent(
-        createComponent("terminating-comp1", 2, "sleep " + "1000",
+        createComponent("terminating-comp1", 2, "sleep 1000",
             Component.RestartPolicyEnum.NEVER, null));
     exampleApp.addComponent(
         createComponent("terminating-comp2", 2, "sleep 1000",
-            Component.RestartPolicyEnum.ON_FAILURE, new ArrayList<String>() {{
-                add("terminating-comp1");
-            }}));
+            Component.RestartPolicyEnum.ON_FAILURE, null));
     exampleApp.addComponent(
         createComponent("terminating-comp3", 2, "sleep 1000",
-            Component.RestartPolicyEnum.ON_FAILURE, new ArrayList<String>() {{
-                add("terminating-comp2");
-            }}));
+            Component.RestartPolicyEnum.ON_FAILURE, null));
 
     return exampleApp;
   }
@@ -251,7 +246,7 @@ public class ServiceTestUtils {
 
     if (yarnCluster == null) {
       yarnCluster =
-          new MiniYARNCluster(TestYarnNativeServices.class.getSimpleName(), 1,
+          new MiniYARNCluster(this.getClass().getSimpleName(), 1,
               numNodeManager, 1, 1);
       yarnCluster.init(conf);
       yarnCluster.start();
@@ -389,8 +384,10 @@ public class ServiceTestUtils {
       conf.set(YARN_SERVICE_BASE_PATH, serviceBasePath.toString());
       try {
         fs = new SliderFileSystem(conf);
+        fs.setAppDir(new Path(serviceBasePath.toString()));
       } catch (IOException e) {
-        Throwables.propagate(e);
+        Throwables.throwIfUnchecked(e);
+        throw new RuntimeException(e);
       }
     }
 
@@ -537,7 +534,6 @@ public class ServiceTestUtils {
     GenericTestUtils.waitFor(() -> {
       try {
         Service retrievedApp = client.getStatus(exampleApp.getName());
-        System.out.println(retrievedApp);
         return retrievedApp.getState() == desiredState;
       } catch (Exception e) {
         e.printStackTrace();

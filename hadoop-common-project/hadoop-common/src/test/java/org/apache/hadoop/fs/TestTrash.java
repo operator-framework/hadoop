@@ -36,6 +36,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import static org.junit.Assert.*;
 
 import org.apache.hadoop.conf.Configuration;
@@ -130,6 +132,9 @@ public class TestTrash {
     FileSystem fs = FileSystem.get(conf);
 
     conf.setLong(FS_TRASH_INTERVAL_KEY, 0); // disabled
+    assertFalse(new Trash(conf).isEnabled());
+
+    conf.setLong(FS_TRASH_INTERVAL_KEY, -1); // disabled
     assertFalse(new Trash(conf).isEnabled());
 
     conf.setLong(FS_TRASH_INTERVAL_KEY, 10); // 10 minute
@@ -483,6 +488,41 @@ public class TestTrash {
           trashRootFs.exists(dirToKeep));
     }
 
+    // Verify expunge -immediate removes all checkpoints and current folder
+    {
+      // Setup a recent and old checkpoint and a current folder
+      // to be deleted on the next expunge and one that isn't.
+      long trashInterval = conf.getLong(FS_TRASH_INTERVAL_KEY,
+          FS_TRASH_INTERVAL_DEFAULT);
+      long now = Time.now();
+      DateFormat checkpointFormat = new SimpleDateFormat("yyMMddHHmm");
+      Path oldCheckpoint = new Path(trashRoot.getParent(),
+          checkpointFormat.format(now - (trashInterval * 60 * 1000) - 1));
+      Path recentCheckpoint = new Path(trashRoot.getParent(),
+          checkpointFormat.format(now));
+      Path currentFolder = new Path(trashRoot.getParent(), "Current");
+      mkdir(trashRootFs, oldCheckpoint);
+      mkdir(trashRootFs, recentCheckpoint);
+      mkdir(trashRootFs, currentFolder);
+
+      // Clear out trash
+      int rc = -1;
+      try {
+        rc = shell.run(new String[] {"-expunge", "-immediate"});
+      } catch (Exception e) {
+        fail("Unexpected exception running the trash shell: " +
+            e.getLocalizedMessage());
+      }
+      assertEquals("Expunge immediate should return zero", 0, rc);
+      assertFalse("Old checkpoint should be removed",
+          trashRootFs.exists(oldCheckpoint));
+      assertFalse("Recent checkpoint should be removed",
+          trashRootFs.exists(recentCheckpoint));
+      assertFalse("Current folder should be removed",
+          trashRootFs.exists(currentFolder));
+      assertEquals("Ensure trash folder is empty",
+          trashRootFs.listStatus(trashRoot.getParent()).length, 0);
+    }
   }
 
   public static void trashNonDefaultFS(Configuration conf) throws IOException {
@@ -515,6 +555,63 @@ public class TestTrash {
     Configuration conf = new Configuration();
     conf.setClass("fs.file.impl", TestLFS.class, FileSystem.class);
     trashShell(FileSystem.getLocal(conf), TEST_DIR);
+  }
+
+  @Test
+  public void testExistingFileTrash() throws IOException {
+    Configuration conf = new Configuration();
+    conf.setClass("fs.file.impl", TestLFS.class, FileSystem.class);
+    FileSystem fs = FileSystem.getLocal(conf);
+    conf.set("fs.defaultFS", fs.getUri().toString());
+    conf.setLong(FS_TRASH_INTERVAL_KEY, 0); // disabled
+    assertFalse(new Trash(conf).isEnabled());
+
+    conf.setLong(FS_TRASH_INTERVAL_KEY, -1); // disabled
+    assertFalse(new Trash(conf).isEnabled());
+
+    conf.setLong(FS_TRASH_INTERVAL_KEY, 10); // 10 minute
+    assertTrue(new Trash(conf).isEnabled());
+
+    FsShell shell = new FsShell();
+    shell.setConf(conf);
+
+    // First create a new directory with mkdirs
+    Path myPath = new Path(TEST_DIR, "test/mkdirs");
+    mkdir(fs, myPath);
+
+    // Second, create a file in that directory.
+    Path myFile = new Path(TEST_DIR, "test/mkdirs/myExistingFile");
+    writeFile(fs, myFile, 10);
+    // First rm a file
+    mkdir(fs, myPath);
+    writeFile(fs, myFile, 10);
+
+    String[] args1 = new String[2];
+    args1[0] = "-rm";
+    args1[1] = myFile.toString();
+    int val1 = -1;
+    try {
+      val1 = shell.run(args1);
+    } catch (Exception e) {
+      System.err.println("Exception raised from Trash.run " +
+          e.getLocalizedMessage());
+    }
+    assertTrue(val1 == 0);
+
+    // Second  rm a file which parent path is the same as above
+    mkdir(fs, myFile);
+    writeFile(fs, new Path(myFile, "mySubFile"), 10);
+    String[] args2 = new String[2];
+    args2[0] = "-rm";
+    args2[1] = new Path(myFile, "mySubFile").toString();
+    int val2 = -1;
+    try {
+      val2 = shell.run(args2);
+    } catch (Exception e) {
+      System.err.println("Exception raised from Trash.run " +
+          e.getLocalizedMessage());
+    }
+    assertTrue(val2 == 0);
   }
 
   @Test
@@ -941,6 +1038,10 @@ public class TestTrash {
     }
 
     @Override
+    public void deleteCheckpointsImmediately() throws IOException {
+    }
+
+    @Override
     public Path getCurrentTrashDir() {
       return null;
     }
@@ -1000,6 +1101,11 @@ public class TestTrash {
     }
 
     @Override
+    public void deleteCheckpointsImmediately() throws IOException {
+      AuditableCheckpoints.deleteAll();
+    }
+
+    @Override
     public Path getCurrentTrashDir() {
       return null;
     }
@@ -1055,23 +1161,30 @@ public class TestTrash {
    */
   private static class AuditableCheckpoints {
 
+    private static final Logger LOG =
+        LoggerFactory.getLogger(AuditableCheckpoints.class);
+
     private static AtomicInteger numOfCheckpoint =
         new AtomicInteger(0);
 
     private static void add() {
       numOfCheckpoint.incrementAndGet();
-      System.out.println(String
-          .format("Create a checkpoint, current number of checkpoints %d",
-              numOfCheckpoint.get()));
+      LOG.info("Create a checkpoint, current number of checkpoints {}",
+          numOfCheckpoint.get());
     }
 
     private static void delete() {
       if(numOfCheckpoint.get() > 0) {
         numOfCheckpoint.decrementAndGet();
-        System.out.println(String
-            .format("Delete a checkpoint, current number of checkpoints %d",
-                numOfCheckpoint.get()));
+        LOG.info("Delete a checkpoint, current number of checkpoints {}",
+            numOfCheckpoint.get());
       }
+    }
+
+    private static void deleteAll() {
+      numOfCheckpoint.set(0);
+      LOG.info("Delete all checkpoints, current number of checkpoints {}",
+          numOfCheckpoint.get());
     }
 
     private static int get() {

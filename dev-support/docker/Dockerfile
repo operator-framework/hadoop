@@ -57,6 +57,7 @@ RUN apt-get -q update && apt-get -q install -y \
     libsnappy-dev \
     libssl-dev \
     libtool \
+    libzstd1-dev \
     locales \
     make \
     pinentry-curses \
@@ -142,8 +143,8 @@ ENV FINDBUGS_HOME /usr
 ####
 # Install shellcheck (0.4.6, the latest as of 2017-09-26)
 ####
-RUN add-apt-repository -y ppa:jonathonf/ghc-8.0.2
-RUN apt-get -q update && apt-get -q install -y shellcheck
+RUN add-apt-repository -y ppa:hvr/ghc
+RUN apt-get -q update && apt-get -q install -y shellcheck ghc-8.0.2
 
 ####
 # Install bats (0.4.0, the latest as of 2017-09-26, ships with Xenial)
@@ -154,7 +155,9 @@ RUN apt-get -q update && apt-get -q install -y bats
 # Install pylint at fixed version (2.0.0 removed python2 support)
 # https://github.com/PyCQA/pylint/issues/2294
 ####
-RUN pip2 install pylint==1.9.2
+RUN pip2 install \
+    configparser==4.0.2 \
+    pylint==1.9.2
 
 ####
 # Install dateutil.parser

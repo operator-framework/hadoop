@@ -251,6 +251,16 @@ public class TestOfflineImageViewer {
       hdfs.truncate(file1, 1);
       writtenFiles.put(file1.toString(), hdfs.getFileStatus(file1));
 
+      // HDFS-14148: Create a second snapshot-enabled directory. This can cause
+      // TestOfflineImageViewer#testReverseXmlRoundTrip to fail before the patch
+      final Path snapshotDir2 = new Path("/snapshotDir2");
+      hdfs.mkdirs(snapshotDir2);
+      // Simply enable snapshot on it, no need to create one
+      hdfs.allowSnapshot(snapshotDir2);
+      dirCount++;
+      writtenFiles.put(snapshotDir2.toString(),
+          hdfs.getFileStatus(snapshotDir2));
+
       // Set XAttrs so the fsimage contains XAttr ops
       final Path xattr = new Path("/xattr");
       hdfs.mkdirs(xattr);
@@ -641,6 +651,25 @@ public class TestOfflineImageViewer {
     } finally {
       System.setOut(oldOut);
       IOUtils.closeStream(out);
+    }
+  }
+
+  @Test(expected = IOException.class)
+  public void testDelimitedWithExistingFolder() throws IOException,
+      InterruptedException {
+    File tempDelimitedDir = null;
+    try {
+      String tempDelimitedDirName = "tempDirDelimited";
+      String tempDelimitedDirPath = new FileSystemTestHelper().
+          getTestRootDir() + "/" + tempDelimitedDirName;
+      tempDelimitedDir = new File(tempDelimitedDirPath);
+      Assert.assertTrue("Couldn't create temp directory!",
+          tempDelimitedDir.mkdirs());
+      testPBDelimitedWriter(tempDelimitedDirPath);
+    } finally {
+      if (tempDelimitedDir != null) {
+        FileUtils.deleteDirectory(tempDelimitedDir);
+      }
     }
   }
 

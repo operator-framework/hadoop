@@ -25,6 +25,7 @@ import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.spy;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -161,6 +162,70 @@ public class TestLeaseRecovery2 {
     stm.write(buffer, 0, size);
     stm.close();
     verifyFile(dfs, filepath1, actual, size);
+  }
+
+  @Test
+  public void testCloseWhileRecoverLease() throws Exception {
+    // test recoverLease
+    // set the soft limit to be 1 hour but recoverLease should
+    // close the file immediately
+    cluster.setLeasePeriod(LONG_LEASE_PERIOD, LONG_LEASE_PERIOD);
+    int size = AppendTestUtil.nextInt((int) BLOCK_SIZE);
+    String filestr = "/testCloseWhileRecoverLease";
+
+    AppendTestUtil.LOG.info("filestr=" + filestr);
+    Path filepath = new Path(filestr);
+    FSDataOutputStream stm = dfs.create(filepath, true, BUF_SIZE,
+        REPLICATION_NUM, BLOCK_SIZE);
+    assertTrue(dfs.dfs.exists(filestr));
+
+    // hflush file
+    AppendTestUtil.LOG.info("hflush");
+    stm.hflush();
+
+    // Pause DN block report.
+    // Let client recover lease, and then close the file, and then let DN
+    // report blocks.
+    ArrayList<DataNode> dataNodes = cluster.getDataNodes();
+    for (DataNode dn: dataNodes) {
+      DataNodeTestUtils.setHeartbeatsDisabledForTests(dn, false);
+    }
+
+    LOG.info("pause IBR");
+    for (DataNode dn: dataNodes) {
+      DataNodeTestUtils.pauseIBR(dn);
+    }
+
+    AppendTestUtil.LOG.info("size=" + size);
+    stm.write(buffer, 0, size);
+
+    // hflush file
+    AppendTestUtil.LOG.info("hflush");
+    stm.hflush();
+
+    LOG.info("recover lease");
+    dfs.recoverLease(filepath);
+    try {
+      stm.close();
+      fail("close() should fail because the file is under recovery.");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains(
+          "whereas it is under recovery", ioe);
+    }
+
+    for (DataNode dn: dataNodes) {
+      DataNodeTestUtils.setHeartbeatsDisabledForTests(dn, false);
+    }
+
+    LOG.info("trigger heartbeats");
+    // resume DN block report
+    for (DataNode dn: dataNodes) {
+      DataNodeTestUtils.triggerHeartbeat(dn);
+    }
+
+    stm.close();
+    assertEquals(cluster.getNamesystem().getBlockManager().
+        getMissingBlocksCount(), 0);
   }
 
   @Test
@@ -341,10 +406,10 @@ public class TestLeaseRecovery2 {
     Map<String, String []> u2g_map = new HashMap<String, String []>(1);
     u2g_map.put(fakeUsername, new String[] {fakeGroup});
     DFSTestUtil.updateConfWithFakeGroupMapping(conf, u2g_map);
-
+    long hardlimit = conf.getLong(DFSConfigKeys.DFS_LEASE_HARDLIMIT_KEY,
+        DFSConfigKeys.DFS_LEASE_HARDLIMIT_DEFAULT) * 1000;
     // Reset default lease periods
-    cluster.setLeasePeriod(HdfsConstants.LEASE_SOFTLIMIT_PERIOD,
-                           HdfsConstants.LEASE_HARDLIMIT_PERIOD);
+    cluster.setLeasePeriod(HdfsConstants.LEASE_SOFTLIMIT_PERIOD, hardlimit);
     //create a file
     // create a random file name
     String filestr = "/foo" + AppendTestUtil.nextInt();

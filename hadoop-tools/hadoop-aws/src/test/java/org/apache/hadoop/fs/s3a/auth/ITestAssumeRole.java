@@ -148,7 +148,7 @@ public class ITestAssumeRole extends AbstractS3ATestBase {
     Configuration conf = new Configuration();
     conf.set(ASSUMED_ROLE_ARN, ROLE_ARN_EXAMPLE);
     interceptClosing(AWSSecurityTokenServiceException.class,
-        E_BAD_ROLE,
+        "",
         () -> new AssumedRoleCredentialProvider(uri, conf));
   }
 
@@ -157,8 +157,7 @@ public class ITestAssumeRole extends AbstractS3ATestBase {
     describe("Attemnpt to create the FS with an invalid ARN");
     Configuration conf = createAssumedRoleConfig();
     conf.set(ASSUMED_ROLE_ARN, ROLE_ARN_EXAMPLE);
-    expectFileSystemCreateFailure(conf, AccessDeniedException.class,
-        E_BAD_ROLE);
+    expectFileSystemCreateFailure(conf, AccessDeniedException.class, "");
   }
 
   @Test
@@ -283,7 +282,6 @@ public class ITestAssumeRole extends AbstractS3ATestBase {
     interceptClosing(IllegalArgumentException.class, "",
         () -> new AssumedRoleCredentialProvider(uri, conf));
   }
-
 
   @Test
   public void testAssumeRoleCreateFS() throws IOException {

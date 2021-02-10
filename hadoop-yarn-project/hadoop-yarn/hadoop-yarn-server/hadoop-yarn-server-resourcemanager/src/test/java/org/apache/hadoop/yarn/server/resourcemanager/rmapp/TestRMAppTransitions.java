@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.server.resourcemanager.rmapp;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyLong;
 import static org.mockito.Matchers.eq;
@@ -66,6 +67,7 @@ import org.apache.hadoop.yarn.api.records.LocalResource;
 import org.apache.hadoop.yarn.api.records.LocalResourceType;
 import org.apache.hadoop.yarn.api.records.LocalResourceVisibility;
 import org.apache.hadoop.yarn.api.records.LogAggregationContext;
+import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.api.records.URL;
@@ -468,6 +470,17 @@ public class TestRMAppTransitions {
         any(ApplicationStateData.class));
   }
 
+  private void assertAppStateLaunchTimeSaved(long expectedLaunchTime) {
+    ArgumentCaptor<ApplicationStateData> state =
+        ArgumentCaptor.forClass(ApplicationStateData.class);
+    ArgumentCaptor<Boolean> notifyApp =
+        ArgumentCaptor.forClass(Boolean.class);
+    verify(store, times(1)).updateApplicationState(state.capture(),
+        notifyApp.capture());
+    assertEquals(expectedLaunchTime, state.getValue().getLaunchTime());
+    assertFalse(notifyApp.getValue());
+  }
+
   private void assertKilled(RMApp application) {
     assertTimesAtFinish(application);
     assertAppState(RMAppState.KILLED, application);
@@ -553,6 +566,7 @@ public class TestRMAppTransitions {
   protected RMApp testCreateAppAccepted(
       ApplicationSubmissionContext submissionContext) throws IOException {
     RMApp application = testCreateAppSubmittedNoRecovery(submissionContext);
+    NodeId nodeId = NodeId.newInstance("host", 1234);
     // SUBMITTED => ACCEPTED event RMAppEventType.APP_ACCEPTED
     RMAppEvent event = 
         new RMAppEvent(application.getApplicationId(), 
@@ -560,6 +574,8 @@ public class TestRMAppTransitions {
     application.handle(event);
     assertStartTimeSet(application);
     assertAppState(RMAppState.ACCEPTED, application);
+    application.handle(
+        new RMAppRunningOnNodeEvent(application.getApplicationId(), nodeId));
     return application;
   }
 
@@ -899,6 +915,21 @@ public class TestRMAppTransitions {
   }
 
   @Test
+  public void testAppAcceptedAccepted() throws IOException {
+    LOG.info("--- START: testAppAcceptedAccepted ---");
+
+    RMApp application = testCreateAppAccepted(null);
+    // ACCEPTED => ACCEPTED event RMAppEventType.ATTEMPT_LAUNCHED
+    RMAppEvent appAttemptLaunched =
+        new RMAppEvent(application.getApplicationId(),
+            RMAppEventType.ATTEMPT_LAUNCHED, 1234L);
+    application.handle(appAttemptLaunched);
+    rmDispatcher.await();
+    assertAppState(RMAppState.ACCEPTED, application);
+    assertAppStateLaunchTimeSaved(1234L);
+  }
+
+  @Test
   public void testAppAcceptedAttemptKilled() throws IOException,
       InterruptedException {
     LOG.info("--- START: testAppAcceptedAttemptKilled ---");
@@ -1059,6 +1090,7 @@ public class TestRMAppTransitions {
     rmDispatcher.await();
     assertTimesAtFinish(application);
     assertAppState(RMAppState.FINISHED, application);
+    Assert.assertEquals(0, application.getRanNodes().size());
     StringBuilder diag = application.getDiagnostics();
     Assert.assertEquals("application diagnostics is not correct",
         "", diag.toString());
@@ -1239,7 +1271,7 @@ public class TestRMAppTransitions {
     ApplicationStateData appState =
         ApplicationStateData.newInstance(app.getSubmitTime(), app.getStartTime(),
             app.getUser(), app.getApplicationSubmissionContext(), rmAppState,
-            null, app.getFinishTime(), null);
+            null, app.getLaunchTime(), app.getFinishTime(), null);
     applicationState.put(app.getApplicationId(), appState);
   }
   

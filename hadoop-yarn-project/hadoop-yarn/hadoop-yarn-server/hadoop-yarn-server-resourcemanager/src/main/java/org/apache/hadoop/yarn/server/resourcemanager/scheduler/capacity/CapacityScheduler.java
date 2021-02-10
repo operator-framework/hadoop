@@ -69,6 +69,7 @@ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.SchedulerResourceTypes;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
+import org.apache.hadoop.yarn.server.resourcemanager.placement.AppNameMappingPlacementRule;
 import org.apache.hadoop.yarn.server.resourcemanager.placement.ApplicationPlacementContext;
 import org.apache.hadoop.yarn.server.resourcemanager.placement.PlacementFactory;
 import org.apache.hadoop.yarn.server.resourcemanager.placement.PlacementRule;
@@ -176,6 +177,8 @@ public class CapacityScheduler extends
 
   private CapacitySchedulerQueueManager queueManager;
 
+  private WorkflowPriorityMappingsManager workflowPriorityMappingsMgr;
+
   // timeout to join when we stop this service
   protected final long THREAD_JOIN_TIMEOUT_MS = 1000;
 
@@ -198,40 +201,9 @@ public class CapacityScheduler extends
 
   private void validateConf(Configuration conf) {
     // validate scheduler memory allocation setting
-    int minMem = conf.getInt(
-      YarnConfiguration.RM_SCHEDULER_MINIMUM_ALLOCATION_MB,
-      YarnConfiguration.DEFAULT_RM_SCHEDULER_MINIMUM_ALLOCATION_MB);
-    int maxMem = conf.getInt(
-      YarnConfiguration.RM_SCHEDULER_MAXIMUM_ALLOCATION_MB,
-      YarnConfiguration.DEFAULT_RM_SCHEDULER_MAXIMUM_ALLOCATION_MB);
-
-    if (minMem <= 0 || minMem > maxMem) {
-      throw new YarnRuntimeException("Invalid resource scheduler memory"
-        + " allocation configuration"
-        + ", " + YarnConfiguration.RM_SCHEDULER_MINIMUM_ALLOCATION_MB
-        + "=" + minMem
-        + ", " + YarnConfiguration.RM_SCHEDULER_MAXIMUM_ALLOCATION_MB
-        + "=" + maxMem + ", min and max should be greater than 0"
-        + ", max should be no smaller than min.");
-    }
-
+    CapacitySchedulerConfigValidator.validateMemoryAllocation(conf);
     // validate scheduler vcores allocation setting
-    int minVcores = conf.getInt(
-      YarnConfiguration.RM_SCHEDULER_MINIMUM_ALLOCATION_VCORES,
-      YarnConfiguration.DEFAULT_RM_SCHEDULER_MINIMUM_ALLOCATION_VCORES);
-    int maxVcores = conf.getInt(
-      YarnConfiguration.RM_SCHEDULER_MAXIMUM_ALLOCATION_VCORES,
-      YarnConfiguration.DEFAULT_RM_SCHEDULER_MAXIMUM_ALLOCATION_VCORES);
-
-    if (minVcores <= 0 || minVcores > maxVcores) {
-      throw new YarnRuntimeException("Invalid resource scheduler vcores"
-        + " allocation configuration"
-        + ", " + YarnConfiguration.RM_SCHEDULER_MINIMUM_ALLOCATION_VCORES
-        + "=" + minVcores
-        + ", " + YarnConfiguration.RM_SCHEDULER_MAXIMUM_ALLOCATION_VCORES
-        + "=" + maxVcores + ", min and max should be greater than 0"
-        + ", max should be no smaller than min.");
-    }
+    CapacitySchedulerConfigValidator.validateVCores(conf);
   }
 
   @Override
@@ -344,7 +316,7 @@ public class CapacityScheduler extends
         throw new YarnRuntimeException("RM uses DefaultResourceCalculator which"
             + " used only memory as resource-type but invalid resource-types"
             + " specified " + ResourceUtils.getResourceTypes() + ". Use"
-            + " DomainantResourceCalculator instead to make effective use of"
+            + " DominantResourceCalculator instead to make effective use of"
             + " these resource-types");
       }
       this.usePortForNodeName = this.conf.getUsePortForNodeName();
@@ -354,6 +326,8 @@ public class CapacityScheduler extends
       this.queueManager = new CapacitySchedulerQueueManager(yarnConf,
           this.labelManager, this.appPriorityACLManager);
       this.queueManager.setCapacitySchedulerContext(this);
+
+      this.workflowPriorityMappingsMgr = new WorkflowPriorityMappingsManager();
 
       this.activitiesManager = new ActivitiesManager(rmContext);
       activitiesManager.init(conf);
@@ -437,6 +411,7 @@ public class CapacityScheduler extends
   public void serviceStop() throws Exception {
     try {
       writeLock.lock();
+      this.activitiesManager.stop();
       if (scheduleAsynchronously && asyncSchedulerThreads != null) {
         for (Thread t : asyncSchedulerThreads) {
           t.interrupt();
@@ -455,14 +430,17 @@ public class CapacityScheduler extends
     super.serviceStop();
   }
 
-  @Override
-  public void reinitialize(Configuration newConf, RMContext rmContext)
-      throws IOException {
+  public void reinitialize(Configuration newConf, RMContext rmContext,
+         boolean validation) throws IOException {
+    writeLock.lock();
     try {
-      writeLock.lock();
       Configuration configuration = new Configuration(newConf);
       CapacitySchedulerConfiguration oldConf = this.conf;
-      this.conf = csConfProvider.loadConfiguration(configuration);
+      if (validation) {
+        this.conf = new CapacitySchedulerConfiguration(newConf, false);
+      } else {
+        this.conf = csConfProvider.loadConfiguration(configuration);
+      }
       validateConf(this.conf);
       try {
         LOG.info("Re-initializing queues...");
@@ -476,17 +454,26 @@ public class CapacityScheduler extends
         throw new IOException("Failed to re-init queues : " + t.getMessage(),
             t);
       }
+      if (!validation) {
 
-      // update lazy preemption
-      this.isLazyPreemptionEnabled = this.conf.getLazyPreemptionEnabled();
+        // update lazy preemption
+        this.isLazyPreemptionEnabled = this.conf.getLazyPreemptionEnabled();
 
-      // Setup how many containers we can allocate for each round
-      offswitchPerHeartbeatLimit = this.conf.getOffSwitchPerHeartbeatLimit();
+        // Setup how many containers we can allocate for each round
+        offswitchPerHeartbeatLimit = this.conf.getOffSwitchPerHeartbeatLimit();
 
-      super.reinitialize(newConf, rmContext);
+        super.reinitialize(newConf, rmContext);
+      }
     } finally {
       writeLock.unlock();
     }
+
+  }
+
+  @Override
+  public void reinitialize(Configuration newConf, RMContext rmContext)
+      throws IOException {
+    reinitialize(newConf, rmContext, false);
   }
 
   long getAsyncScheduleInterval() {
@@ -665,45 +652,74 @@ public class CapacityScheduler extends
   public PlacementRule getUserGroupMappingPlacementRule() throws IOException {
     try {
       readLock.lock();
-      return UserGroupMappingPlacementRule.get(this);
+      UserGroupMappingPlacementRule ugRule = new UserGroupMappingPlacementRule();
+      ugRule.initialize(this);
+      return ugRule;
+    } finally {
+      readLock.unlock();
+    }
+  }
+
+  public PlacementRule getAppNameMappingPlacementRule() throws IOException {
+    try {
+      readLock.lock();
+      AppNameMappingPlacementRule anRule = new AppNameMappingPlacementRule();
+      anRule.initialize(this);
+      return anRule;
     } finally {
       readLock.unlock();
     }
   }
 
   @VisibleForTesting
-  void updatePlacementRules() throws IOException {
+  public void updatePlacementRules() throws IOException {
     // Initialize placement rules
     Collection<String> placementRuleStrs = conf.getStringCollection(
         YarnConfiguration.QUEUE_PLACEMENT_RULES);
     List<PlacementRule> placementRules = new ArrayList<>();
-    if (placementRuleStrs.isEmpty()) {
-      PlacementRule ugRule = getUserGroupMappingPlacementRule();
-      if (null != ugRule) {
-        placementRules.add(ugRule);
-      }
-    } else {
-      for (String placementRuleStr : placementRuleStrs) {
-        switch (placementRuleStr) {
-        case YarnConfiguration.USER_GROUP_PLACEMENT_RULE:
-          PlacementRule ugRule = getUserGroupMappingPlacementRule();
-          if (null != ugRule) {
-            placementRules.add(ugRule);
-          }
-          break;
-        default:
-          try {
-            PlacementRule rule = PlacementFactory.getPlacementRule(
-                placementRuleStr, conf);
-            if (null != rule) {
+    Set<String> distinguishRuleSet = CapacitySchedulerConfigValidator
+            .validatePlacementRules(placementRuleStrs);
+
+    // add UserGroupMappingPlacementRule if absent
+    distinguishRuleSet.add(YarnConfiguration.USER_GROUP_PLACEMENT_RULE);
+
+    placementRuleStrs = new ArrayList<>(distinguishRuleSet);
+
+    for (String placementRuleStr : placementRuleStrs) {
+      switch (placementRuleStr) {
+      case YarnConfiguration.USER_GROUP_PLACEMENT_RULE:
+        PlacementRule ugRule = getUserGroupMappingPlacementRule();
+        if (null != ugRule) {
+          placementRules.add(ugRule);
+        }
+        break;
+      case YarnConfiguration.APP_NAME_PLACEMENT_RULE:
+        PlacementRule anRule = getAppNameMappingPlacementRule();
+        if (null != anRule) {
+          placementRules.add(anRule);
+        }
+        break;
+      default:
+        boolean isMappingNotEmpty;
+        try {
+          PlacementRule rule = PlacementFactory.getPlacementRule(
+              placementRuleStr, conf);
+          if (null != rule) {
+            try {
+              isMappingNotEmpty = rule.initialize(this);
+            } catch (IOException ie) {
+              throw new IOException(ie);
+            }
+            if (isMappingNotEmpty) {
               placementRules.add(rule);
             }
-          } catch (ClassNotFoundException cnfe) {
-            throw new IOException(cnfe);
           }
+        } catch (ClassNotFoundException cnfe) {
+          throw new IOException(cnfe);
         }
       }
     }
+
     rmContext.getQueuePlacementManager().updateRules(placementRules);
   }
 
@@ -715,6 +731,8 @@ public class CapacityScheduler extends
 
     updatePlacementRules();
 
+    this.workflowPriorityMappingsMgr.initialize(this);
+
     // Notify Preemption Manager
     preemptionManager.refreshQueues(null, this.getRootQueue());
   }
@@ -724,6 +742,8 @@ public class CapacityScheduler extends
   throws IOException {
     this.queueManager.reinitializeQueues(newConf);
     updatePlacementRules();
+
+    this.workflowPriorityMappingsMgr.initialize(this);
 
     // Notify Preemption Manager
     preemptionManager.refreshQueues(null, this.getRootQueue());
@@ -932,6 +952,17 @@ public class CapacityScheduler extends
                   message));
           return;
         }
+      }
+
+      try {
+        priority = workflowPriorityMappingsMgr.mapWorkflowPriorityForApp(
+            applicationId, queue, user, priority);
+      } catch (YarnException e) {
+        String message = "Failed to submit application " + applicationId +
+            " submitted by user " + user + " reason: " + e.getMessage();
+        this.rmContext.getDispatcher().getEventHandler().handle(new RMAppEvent(
+            applicationId, RMAppEventType.APP_REJECTED, message));
+        return;
       }
 
       // Submit to the queue
@@ -1538,8 +1569,8 @@ public class CapacityScheduler extends
             .add(node.getUnallocatedResource(), node.getTotalKillableResources()),
         minimumAllocation) <= 0) {
       if (LOG.isDebugEnabled()) {
-        LOG.debug("This node or this node partition doesn't have available or"
-            + "killable resource");
+        LOG.debug("This node or node partition doesn't have available or" +
+            " preemptible resource");
       }
       return null;
     }
@@ -1967,7 +1998,8 @@ public class CapacityScheduler extends
   private void updateQueuePreemptionMetrics(
       CSQueue queue, RMContainer rmc) {
     QueueMetrics qMetrics = queue.getMetrics();
-    long usedMillis = rmc.getFinishTime() - rmc.getCreationTime();
+    final long usedMillis = rmc.getFinishTime() - rmc.getCreationTime();
+    final long usedSeconds = usedMillis / DateUtils.MILLIS_PER_SECOND;
     Resource containerResource = rmc.getAllocatedResource();
     qMetrics.preemptContainer();
     long mbSeconds = (containerResource.getMemorySize() * usedMillis)
@@ -1976,6 +2008,9 @@ public class CapacityScheduler extends
         / DateUtils.MILLIS_PER_SECOND;
     qMetrics.updatePreemptedMemoryMBSeconds(mbSeconds);
     qMetrics.updatePreemptedVcoreSeconds(vcSeconds);
+    qMetrics.updatePreemptedSecondsForCustomResources(containerResource,
+        usedSeconds);
+    qMetrics.updatePreemptedResources(containerResource);
   }
 
   @Lock(Lock.NoLock.class)
@@ -2050,8 +2085,8 @@ public class CapacityScheduler extends
         super.completedContainer(killableContainer, SchedulerUtils
             .createPreemptedContainerStatus(killableContainer.getContainerId(),
                 SchedulerUtils.PREEMPTED_CONTAINER), RMContainerEventType.KILL);
-      } else{
-        FiCaSchedulerNode node = (FiCaSchedulerNode) getSchedulerNode(
+      } else {
+        FiCaSchedulerNode node = getSchedulerNode(
             killableContainer.getAllocatedNode());
 
         FiCaSchedulerApp application = getCurrentAttemptForContainer(
@@ -2083,7 +2118,7 @@ public class CapacityScheduler extends
                 + nonKillableContainer.toString());
       }
 
-      FiCaSchedulerNode node = (FiCaSchedulerNode) getSchedulerNode(
+      FiCaSchedulerNode node = getSchedulerNode(
           nonKillableContainer.getAllocatedNode());
 
       FiCaSchedulerApp application = getCurrentAttemptForContainer(
@@ -2333,6 +2368,11 @@ public class CapacityScheduler extends
           // attach the Container to another queue
           dest.attachContainer(getClusterResource(), app, rmContainer);
         }
+        // Move all reserved containers
+        for (RMContainer rmContainer : app.getReservedContainers()) {
+          source.detachContainer(getClusterResource(), app, rmContainer);
+          dest.attachContainer(getClusterResource(), app, rmContainer);
+        }
         if (!app.isStopped()) {
           source.finishApplicationAttempt(app, sourceQueueName);
           // Submit to a new queue
@@ -2439,7 +2479,17 @@ public class CapacityScheduler extends
       LOG.error("queue " + queueName + " is not an leaf queue");
       return getMaximumResourceCapability();
     }
-    return ((LeafQueue)queue).getMaximumAllocation();
+
+    // queue.getMaxAllocation returns *configured* maximum allocation.
+    // getMaximumResourceCapability() returns maximum allocation considers
+    // per-node maximum resources. So return (component-wise) min of the two.
+
+    Resource queueMaxAllocation = ((LeafQueue)queue).getMaximumAllocation();
+    Resource clusterMaxAllocationConsiderNodeMax =
+        getMaximumResourceCapability();
+
+    return Resources.componentwiseMin(queueMaxAllocation,
+        clusterMaxAllocationConsiderNodeMax);
   }
 
   private String handleMoveToPlanQueue(String targetQueueName) {
@@ -2552,6 +2602,7 @@ public class CapacityScheduler extends
           rmApp.getApplicationSubmissionContext(), rmApp.getUser(),
           rmApp.getCallerContext());
       appState.setApplicationTimeouts(rmApp.getApplicationTimeouts());
+      appState.setLaunchTime(rmApp.getLaunchTime());
       rmContext.getStateStore().updateApplicationStateSynchronously(appState,
           false, future);
 
@@ -2616,7 +2667,11 @@ public class CapacityScheduler extends
         .getContainersToKill().isEmpty()) {
       list = new ArrayList<>();
       for (RMContainer rmContainer : csAssignment.getContainersToKill()) {
-        list.add(getSchedulerContainer(rmContainer, false));
+        SchedulerContainer schedulerContainer =
+            getSchedulerContainer(rmContainer, false);
+        if (schedulerContainer != null) {
+          list.add(schedulerContainer);
+        }
       }
     }
 
@@ -2624,10 +2679,16 @@ public class CapacityScheduler extends
       if (null == list) {
         list = new ArrayList<>();
       }
-      list.add(
-          getSchedulerContainer(csAssignment.getExcessReservation(), false));
+      SchedulerContainer schedulerContainer =
+          getSchedulerContainer(csAssignment.getExcessReservation(), false);
+      if (schedulerContainer != null) {
+        list.add(schedulerContainer);
+      }
     }
 
+    if (list != null && list.isEmpty()) {
+      list = null;
+    }
     return list;
   }
 
@@ -2712,11 +2773,15 @@ public class CapacityScheduler extends
       ((RMContainerImpl)rmContainer).setAllocationTags(
           new HashSet<>(schedulingRequest.getAllocationTags()));
 
-      allocated = new ContainerAllocationProposal<>(
-          getSchedulerContainer(rmContainer, true),
-          null, null, NodeType.NODE_LOCAL, NodeType.NODE_LOCAL,
-          SchedulingMode.RESPECT_PARTITION_EXCLUSIVITY,
-          resource);
+      SchedulerContainer<FiCaSchedulerApp, FiCaSchedulerNode>
+          schedulerContainer = getSchedulerContainer(rmContainer, true);
+      if (schedulerContainer == null) {
+        allocated = null;
+      } else {
+        allocated = new ContainerAllocationProposal<>(schedulerContainer,
+            null, null, NodeType.NODE_LOCAL, NodeType.NODE_LOCAL,
+            SchedulingMode.RESPECT_PARTITION_EXCLUSIVITY, resource);
+      }
     }
 
     if (null != allocated) {
@@ -2746,16 +2811,27 @@ public class CapacityScheduler extends
           csAssignment.getAssignmentInformation().getAllocationDetails();
       if (!allocations.isEmpty()) {
         RMContainer rmContainer = allocations.get(0).rmContainer;
-        allocated = new ContainerAllocationProposal<>(
-            getSchedulerContainer(rmContainer, true),
-            getSchedulerContainersToRelease(csAssignment),
-            getSchedulerContainer(csAssignment.getFulfilledReservedContainer(),
-                false), csAssignment.getType(),
-            csAssignment.getRequestLocalityType(),
-            csAssignment.getSchedulingMode() != null ?
-                csAssignment.getSchedulingMode() :
-                SchedulingMode.RESPECT_PARTITION_EXCLUSIVITY,
-            csAssignment.getResource());
+        SchedulerContainer<FiCaSchedulerApp, FiCaSchedulerNode>
+            schedulerContainer = getSchedulerContainer(rmContainer, true);
+        if (schedulerContainer == null) {
+          allocated = null;
+          // Decrease unconfirmed resource if app is alive
+          FiCaSchedulerApp app = getApplicationAttempt(
+              rmContainer.getApplicationAttemptId());
+          if (app != null) {
+            app.decUnconfirmedRes(rmContainer.getAllocatedResource());
+          }
+        } else {
+          allocated = new ContainerAllocationProposal<>(schedulerContainer,
+              getSchedulerContainersToRelease(csAssignment),
+              getSchedulerContainer(
+                  csAssignment.getFulfilledReservedContainer(), false),
+              csAssignment.getType(), csAssignment.getRequestLocalityType(),
+              csAssignment.getSchedulingMode() != null ?
+                  csAssignment.getSchedulingMode() :
+                  SchedulingMode.RESPECT_PARTITION_EXCLUSIVITY,
+              csAssignment.getResource());
+        }
       }
 
       // Reserved something
@@ -2763,16 +2839,21 @@ public class CapacityScheduler extends
           csAssignment.getAssignmentInformation().getReservationDetails();
       if (!reservation.isEmpty()) {
         RMContainer rmContainer = reservation.get(0).rmContainer;
-        reserved = new ContainerAllocationProposal<>(
-            getSchedulerContainer(rmContainer, false),
-            getSchedulerContainersToRelease(csAssignment),
-            getSchedulerContainer(csAssignment.getFulfilledReservedContainer(),
-                false), csAssignment.getType(),
-            csAssignment.getRequestLocalityType(),
-            csAssignment.getSchedulingMode() != null ?
-                csAssignment.getSchedulingMode() :
-                SchedulingMode.RESPECT_PARTITION_EXCLUSIVITY,
-            csAssignment.getResource());
+        SchedulerContainer<FiCaSchedulerApp, FiCaSchedulerNode>
+            schedulerContainer = getSchedulerContainer(rmContainer, false);
+        if (schedulerContainer == null) {
+          reserved = null;
+        } else {
+          reserved = new ContainerAllocationProposal<>(schedulerContainer,
+              getSchedulerContainersToRelease(csAssignment),
+              getSchedulerContainer(
+                  csAssignment.getFulfilledReservedContainer(), false),
+              csAssignment.getType(), csAssignment.getRequestLocalityType(),
+              csAssignment.getSchedulingMode() != null ?
+                  csAssignment.getSchedulingMode() :
+                  SchedulingMode.RESPECT_PARTITION_EXCLUSIVITY,
+              csAssignment.getResource());
+        }
       }
     }
 
@@ -2885,6 +2966,10 @@ public class CapacityScheduler extends
     return this.queueManager;
   }
 
+  public WorkflowPriorityMappingsManager getWorkflowPriorityMappingsManager() {
+    return this.workflowPriorityMappingsMgr;
+  }
+
   /**
    * Try to move a reserved container to a targetNode.
    * If the targetNode is reserved by another application (other than this one).
@@ -2968,7 +3053,8 @@ public class CapacityScheduler extends
       // check only for maximum, that's enough because default can't
       // exceed maximum
       if (maximumApplicationLifetime <= 0) {
-        return lifetimeRequestedByApp;
+        return (lifetimeRequestedByApp <= 0) ? defaultApplicationLifetime :
+            lifetimeRequestedByApp;
       }
 
       if (lifetimeRequestedByApp <= 0) {

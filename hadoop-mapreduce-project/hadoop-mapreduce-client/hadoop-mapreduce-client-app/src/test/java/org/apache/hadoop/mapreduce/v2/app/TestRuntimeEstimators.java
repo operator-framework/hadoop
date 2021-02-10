@@ -57,6 +57,7 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEventType;
 import org.apache.hadoop.mapreduce.v2.app.speculate.DefaultSpeculator;
 import org.apache.hadoop.mapreduce.v2.app.speculate.ExponentiallySmoothedTaskRuntimeEstimator;
 import org.apache.hadoop.mapreduce.v2.app.speculate.LegacyTaskRuntimeEstimator;
+import org.apache.hadoop.mapreduce.v2.app.speculate.SimpleExponentialTaskRuntimeEstimator;
 import org.apache.hadoop.mapreduce.v2.app.speculate.Speculator;
 import org.apache.hadoop.mapreduce.v2.app.speculate.SpeculatorEvent;
 import org.apache.hadoop.mapreduce.v2.app.speculate.TaskRuntimeEstimator;
@@ -125,6 +126,9 @@ public class TestRuntimeEstimators {
     estimator = testedEstimator;
 	clock = new ControlledClock();
 	dispatcher = new AsyncDispatcher();
+    Configuration conf = new Configuration();
+    dispatcher.init(conf);
+
     myJob = null;
     slotsInUse.set(0);
     completedMaps.set(0);
@@ -133,8 +137,6 @@ public class TestRuntimeEstimators {
     taskTimeSavedBySpeculation.set(0);
 
     clock.tickMsec(1000);
-
-    Configuration conf = new Configuration();
 
     myAppContext = new MyAppContext(MAP_TASKS, REDUCE_TASKS);
     myJob = myAppContext.getAllJobs().values().iterator().next();
@@ -162,7 +164,6 @@ public class TestRuntimeEstimators {
 
     dispatcher.register(TaskEventType.class, new SpeculationRequestEventHandler());
 
-    dispatcher.init(conf);
     dispatcher.start();
 
 
@@ -254,6 +255,13 @@ public class TestRuntimeEstimators {
   public void testExponentialEstimator() throws Exception {
     TaskRuntimeEstimator specificEstimator
         = new ExponentiallySmoothedTaskRuntimeEstimator();
+    coreTestEstimator(specificEstimator, 3);
+  }
+
+  @Test
+  public void testSimpleExponentialEstimator() throws Exception {
+    TaskRuntimeEstimator specificEstimator
+        = new SimpleExponentialTaskRuntimeEstimator();
     coreTestEstimator(specificEstimator, 3);
   }
 

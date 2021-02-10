@@ -141,6 +141,7 @@ public abstract class AbstractYarnScheduler
   @VisibleForTesting
   Thread updateThread;
   private final Object updateThreadMonitor = new Object();
+  private Timer releaseCache;
 
   /*
    * All schedulers which are inheriting AbstractYarnScheduler should use
@@ -201,7 +202,7 @@ public abstract class AbstractYarnScheduler
     nodeTracker.setConfiguredMaxAllocationWaitTime(
         configuredMaximumAllocationWaitTime);
     maxClusterLevelAppPriority = getMaxPriorityFromConf(conf);
-    createReleaseCache();
+    this.releaseCache = new Timer("Pending Container Clear Timer");
     autoUpdateContainers =
         conf.getBoolean(YarnConfiguration.RM_AUTO_UPDATE_CONTAINERS,
             YarnConfiguration.DEFAULT_RM_AUTO_UPDATE_CONTAINERS);
@@ -223,6 +224,7 @@ public abstract class AbstractYarnScheduler
       updateThread.start();
     }
     schedulingMonitorManager.startAll();
+    createReleaseCache();
     super.serviceStart();
   }
 
@@ -232,12 +234,18 @@ public abstract class AbstractYarnScheduler
       updateThread.interrupt();
       updateThread.join(THREAD_JOIN_TIMEOUT_MS);
     }
+
+    //Stop Timer
+    if (releaseCache != null) {
+      releaseCache.cancel();
+      releaseCache = null;
+    }
     schedulingMonitorManager.stop();
     super.serviceStop();
   }
 
   @VisibleForTesting
-  public ClusterNodeTracker getNodeTracker() {
+  public ClusterNodeTracker<N> getNodeTracker() {
     return nodeTracker;
   }
 
@@ -632,7 +640,7 @@ public abstract class AbstractYarnScheduler
 
   protected void createReleaseCache() {
     // Cleanup the cache after nm expire interval.
-    new Timer().schedule(new TimerTask() {
+    releaseCache.schedule(new TimerTask() {
       @Override
       public void run() {
         clearPendingContainerCache();
@@ -690,8 +698,10 @@ public abstract class AbstractYarnScheduler
         LOG.debug("Completed container: " + rmContainer.getContainerId() +
             " in state: " + rmContainer.getState() + " event:" + event);
       }
-      getSchedulerNode(rmContainer.getNodeId()).releaseContainer(
-          rmContainer.getContainerId(), false);
+      SchedulerNode node = getSchedulerNode(rmContainer.getNodeId());
+      if (node != null) {
+        node.releaseContainer(rmContainer.getContainerId(), false);
+      }
     }
 
     // If the container is getting killed in ACQUIRED state, the requester (AM
@@ -1247,8 +1257,10 @@ public abstract class AbstractYarnScheduler
               uReq.getContainerUpdateType()) {
             RMContainer demotedRMContainer =
                 createDemotedRMContainer(appAttempt, oppCntxt, rmContainer);
-            appAttempt.addToNewlyDemotedContainers(
-                uReq.getContainerId(), demotedRMContainer);
+            if (demotedRMContainer != null) {
+              appAttempt.addToNewlyDemotedContainers(
+                      uReq.getContainerId(), demotedRMContainer);
+            }
           } else {
             RMContainer demotedRMContainer = createDecreasedRMContainer(
                 appAttempt, uReq, rmContainer);

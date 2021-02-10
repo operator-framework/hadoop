@@ -48,16 +48,19 @@ public class GpuResourceHandlerImpl implements ResourceHandler {
   public static final String EXCLUDED_GPUS_CLI_OPTION = "--excluded_gpus";
   public static final String CONTAINER_ID_CLI_OPTION = "--container_id";
 
-  private GpuResourceAllocator gpuAllocator;
-  private CGroupsHandler cGroupsHandler;
-  private PrivilegedOperationExecutor privilegedOperationExecutor;
+  private final GpuResourceAllocator gpuAllocator;
+  private final CGroupsHandler cGroupsHandler;
+  private final PrivilegedOperationExecutor privilegedOperationExecutor;
+  private final GpuDiscoverer gpuDiscoverer;
 
   public GpuResourceHandlerImpl(Context nmContext,
       CGroupsHandler cGroupsHandler,
-      PrivilegedOperationExecutor privilegedOperationExecutor) {
+      PrivilegedOperationExecutor privilegedOperationExecutor,
+      GpuDiscoverer gpuDiscoverer) {
     this.cGroupsHandler = cGroupsHandler;
     this.privilegedOperationExecutor = privilegedOperationExecutor;
-    gpuAllocator = new GpuResourceAllocator(nmContext);
+    this.gpuAllocator = new GpuResourceAllocator(nmContext);
+    this.gpuDiscoverer = gpuDiscoverer;
   }
 
   @Override
@@ -65,11 +68,10 @@ public class GpuResourceHandlerImpl implements ResourceHandler {
       throws ResourceHandlerException {
     List<GpuDevice> usableGpus;
     try {
-      usableGpus = GpuDiscoverer.getInstance()
-          .getGpusUsableByYarn();
+      usableGpus = gpuDiscoverer.getGpusUsableByYarn();
       if (usableGpus == null || usableGpus.isEmpty()) {
         String message = "GPU is enabled on the NodeManager, but couldn't find "
-            + "any usable GPU devices, please double check configuration.";
+            + "any usable GPU devices, please double check configuration!";
         LOG.error(message);
         throw new ResourceHandlerException(message);
       }
@@ -166,7 +168,7 @@ public class GpuResourceHandlerImpl implements ResourceHandler {
   @Override
   public synchronized List<PrivilegedOperation> postComplete(
       ContainerId containerId) throws ResourceHandlerException {
-    gpuAllocator.cleanupAssignGpus(containerId);
+    gpuAllocator.unassignGpus(containerId);
     cGroupsHandler.deleteCGroup(CGroupsHandler.CGroupController.DEVICES,
         containerId.toString());
     return null;
@@ -175,5 +177,12 @@ public class GpuResourceHandlerImpl implements ResourceHandler {
   @Override
   public List<PrivilegedOperation> teardown() throws ResourceHandlerException {
     return null;
+  }
+
+  @Override
+  public String toString() {
+    return GpuResourceHandlerImpl.class.getName() + "{" +
+        "gpuAllocator=" + gpuAllocator +
+        '}';
   }
 }

@@ -89,8 +89,13 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_REPLICATION_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_REPLICATION_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SNAPSHOT_DIFF_LISTING_LIMIT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SNAPSHOT_DIFF_LISTING_LIMIT_DEFAULT;
+
+import java.util.concurrent.atomic.AtomicLong;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import static org.apache.hadoop.hdfs.server.namenode.FSDirStatAndListingOp.*;
+import static org.apache.hadoop.ha.HAServiceProtocol.HAServiceState.ACTIVE;
+import static org.apache.hadoop.ha.HAServiceProtocol.HAServiceState.STANDBY;
+import static org.apache.hadoop.ha.HAServiceProtocol.HAServiceState.OBSERVER;
 
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyInfo;
 import org.apache.hadoop.hdfs.protocol.OpenFilesIterator.OpenFilesType;
@@ -111,7 +116,6 @@ import java.io.DataInput;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
@@ -120,6 +124,7 @@ import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -282,6 +287,7 @@ import org.apache.hadoop.hdfs.web.JsonUtil;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.ipc.CallerContext;
+import org.apache.hadoop.ipc.ObserverRetryOnActiveException;
 import org.apache.hadoop.ipc.RetriableException;
 import org.apache.hadoop.ipc.RetryCache;
 import org.apache.hadoop.ipc.Server;
@@ -304,6 +310,7 @@ import org.apache.hadoop.util.Daemon;
 import org.apache.hadoop.util.DataChecksum;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.Time;
 import org.apache.hadoop.util.VersionInfo;
 import org.apache.log4j.Appender;
 import org.apache.log4j.AsyncAppender;
@@ -425,13 +432,13 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   public static final Log auditLog = LogFactory.getLog(
       FSNamesystem.class.getName() + ".audit");
 
-  static final int DEFAULT_MAX_CORRUPT_FILEBLOCKS_RETURNED = 100;
-  static int BLOCK_DELETION_INCREMENT = 1000;
+  private final int maxCorruptFileBlocksReturn;
   private final boolean isPermissionEnabled;
   private final UserGroupInformation fsOwner;
   private final String supergroup;
   private final boolean standbyShouldCheckpoint;
   private final int snapshotDiffReportLimit;
+  private final int blockDeletionIncrement;
 
   /** Interval between each check of lease to release. */
   private final long leaseRecheckIntervalMs;
@@ -458,7 +465,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
 
   /** The namespace tree. */
   FSDirectory dir;
-  private final BlockManager blockManager;
+  private BlockManager blockManager;
   private final SnapshotManager snapshotManager;
   private final CacheManager cacheManager;
   private final DatanodeStatistics datanodeStatistics;
@@ -482,7 +489,12 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   // A daemon to periodically clean up corrupt lazyPersist files
   // from the name space.
   Daemon lazyPersistFileScrubber = null;
-
+  /**
+   * Timestamp marking the end time of {@link #lazyPersistFileScrubber}'s full
+   * cycle. This value can be checked by the Junit tests to verify that the
+   * {@link #lazyPersistFileScrubber} has run at least one full iteration.
+   */
+  private final AtomicLong lazyPersistFileScrubberTS = new AtomicLong(0);
   // Executor to warm up EDEK cache
   private ExecutorService edekCacheLoader = null;
   private final int edekCacheLoaderDelay;
@@ -537,7 +549,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   private final ReentrantLock cpLock;
 
   /**
-   * Used when this NN is in standby state to read from the shared edit log.
+   * Used when this NN is in standby or observer state to read from the
+   * shared edit log.
    */
   private EditLogTailer editLogTailer = null;
 
@@ -582,6 +595,12 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   private boolean manualSafeMode = false;
   private boolean resourceLowSafeMode = false;
   private String nameNodeHostName = null;
+
+  /**
+   * HDFS-14497: Concurrency control when many metaSave request to write
+   * meta to same out stream after switch to read lock.
+   */
+  private final Object metaSaveLock = new Object();
 
   /**
    * Notify that loading of this FSDirectory is complete, and
@@ -632,6 +651,20 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   @VisibleForTesting
   LeaseManager getLeaseManager() {
     return leaseManager;
+  }
+
+  /**
+   * Used as ad hoc to check the time stamp of the last full cycle of {@link
+   * #lazyPersistFileScrubber} daemon. This is used by the Junit tests to block
+   * until {@link #lazyPersistFileScrubberTS} is updated.
+   *
+   * @return the current {@link #lazyPersistFileScrubberTS} if {@link
+   * #lazyPersistFileScrubber} is not null.
+   */
+  @VisibleForTesting
+  public long getLazyPersistFileScrubberTS() {
+    return lazyPersistFileScrubber == null ? -1
+        : lazyPersistFileScrubberTS.get();
   }
 
   public boolean isHaEnabled() {
@@ -831,6 +864,10 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
           DFSConfigKeys.DFS_NAMENODE_FILE_CLOSE_NUM_COMMITTED_ALLOWED_KEY,
           DFSConfigKeys.DFS_NAMENODE_FILE_CLOSE_NUM_COMMITTED_ALLOWED_DEFAULT);
 
+      this.maxCorruptFileBlocksReturn = conf.getInt(
+          DFSConfigKeys.DFS_NAMENODE_MAX_CORRUPT_FILE_BLOCKS_RETURNED_KEY,
+          DFSConfigKeys.DFS_NAMENODE_MAX_CORRUPT_FILE_BLOCKS_RETURNED_DEFAULT);
+
       this.dtpReplaceDatanodeOnFailure = ReplaceDatanodeOnFailure.get(conf);
       
       this.standbyShouldCheckpoint = conf.getBoolean(
@@ -903,6 +940,13 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
           DFSConfigKeys.DFS_NAMENODE_LIST_OPENFILES_NUM_RESPONSES +
               " must be a positive integer."
       );
+
+      this.blockDeletionIncrement = conf.getInt(
+          DFSConfigKeys.DFS_NAMENODE_BLOCK_DELETION_INCREMENT_KEY,
+          DFSConfigKeys.DFS_NAMENODE_BLOCK_DELETION_INCREMENT_DEFAULT);
+      Preconditions.checkArgument(blockDeletionIncrement > 0,
+          DFSConfigKeys.DFS_NAMENODE_BLOCK_DELETION_INCREMENT_KEY +
+              " must be a positive integer.");
     } catch(IOException e) {
       LOG.error(getClass().getSimpleName() + " initialization failed.", e);
       close();
@@ -1050,7 +1094,9 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
 
     // Make sure there is at least one logger installed.
     if (auditLoggers.isEmpty()) {
-      auditLoggers.add(new DefaultAuditLogger());
+      DefaultAuditLogger defaultAuditLogger = new DefaultAuditLogger();
+      defaultAuditLogger.initialize(conf);
+      auditLoggers.add(defaultAuditLogger);
     }
 
     // Add audit logger to calculate top users
@@ -1357,24 +1403,25 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   }
   
   /**
-   * Start services required in standby state 
+   * Start services required in standby or observer state
    * 
    * @throws IOException
    */
-  void startStandbyServices(final Configuration conf) throws IOException {
-    LOG.info("Starting services required for standby state");
+  void startStandbyServices(final Configuration conf, boolean isObserver)
+      throws IOException {
+    LOG.info("Starting services required for " +
+        (isObserver ? "observer" : "standby") + " state");
     if (!getFSImage().editLog.isOpenForRead()) {
       // During startup, we're already open for read.
       getFSImage().editLog.initSharedJournalsForRead();
     }
-    
     blockManager.setPostponeBlocksFromFuture(true);
 
     // Disable quota checks while in standby.
     dir.disableQuotaChecks();
     editLogTailer = new EditLogTailer(this, conf);
     editLogTailer.start();
-    if (standbyShouldCheckpoint) {
+    if (!isObserver && standbyShouldCheckpoint) {
       standbyCheckpointer = new StandbyCheckpointer(conf, this);
       standbyCheckpointer.start();
     }
@@ -1405,7 +1452,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
 
   /** Stop services required in standby state */
   void stopStandbyServices() throws IOException {
-    LOG.info("Stopping services started for standby state");
+    HAServiceState curState = getState() == OBSERVER? OBSERVER : STANDBY;
+    LOG.info("Stopping services started for {} state", curState);
     if (standbyCheckpointer != null) {
       standbyCheckpointer.stop();
     }
@@ -1708,7 +1756,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       return haEnabled;
     }
 
-    return HAServiceState.STANDBY == haContext.getState().getServiceState();
+    return HAServiceState.STANDBY == haContext.getState().getServiceState() ||
+        HAServiceState.OBSERVER == haContext.getState().getServiceState();
   }
 
   /**
@@ -1737,24 +1786,27 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   void metaSave(String filename) throws IOException {
     String operationName = "metaSave";
     checkSuperuserPrivilege(operationName);
-    checkOperation(OperationCategory.UNCHECKED);
-    writeLock();
+    checkOperation(OperationCategory.READ);
+    readLock();
     try {
-      checkOperation(OperationCategory.UNCHECKED);
-      File file = new File(System.getProperty("hadoop.log.dir"), filename);
-      PrintWriter out = new PrintWriter(new BufferedWriter(
-          new OutputStreamWriter(new FileOutputStream(file), Charsets.UTF_8)));
-      metaSave(out);
-      out.flush();
-      out.close();
+      checkOperation(OperationCategory.READ);
+      synchronized(metaSaveLock) {
+        File file = new File(System.getProperty("hadoop.log.dir"), filename);
+        PrintWriter out = new PrintWriter(new BufferedWriter(
+                new OutputStreamWriter(Files.newOutputStream(file.toPath()),
+                        Charsets.UTF_8)));
+        metaSave(out);
+        out.flush();
+        out.close();
+      }
     } finally {
-      writeUnlock(operationName);
+      readUnlock(operationName);
     }
     logAuditEvent(true, operationName, null);
   }
 
   private void metaSave(PrintWriter out) {
-    assert hasWriteLock();
+    assert hasReadLock();
     long totalInodes = this.dir.totalInodes();
     long totalBlocks = this.getBlocksTotal();
     out.println(totalInodes + " files and directories, " + totalBlocks
@@ -1921,11 +1973,13 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     checkOperation(OperationCategory.READ);
     GetBlockLocationsResult res = null;
     final FSPermissionChecker pc = getPermissionChecker();
+    final INode inode;
     readLock();
     try {
       checkOperation(OperationCategory.READ);
       res = FSDirStatAndListingOp.getBlockLocations(
           dir, pc, srcArg, offset, length, true);
+      inode = res.getIIp().getLastINode();
       if (isInSafeMode()) {
         for (LocatedBlock b : res.blocks.getLocatedBlocks()) {
           // if safemode & no block locations yet then throw safemodeException
@@ -1933,11 +1987,20 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
             SafeModeException se = newSafemodeException(
                 "Zero blocklocations for " + srcArg);
             if (haEnabled && haContext != null &&
-                haContext.getState().getServiceState() == HAServiceState.ACTIVE) {
+                (haContext.getState().getServiceState() == ACTIVE ||
+                    haContext.getState().getServiceState() == OBSERVER)) {
               throw new RetriableException(se);
             } else {
               throw se;
             }
+          }
+        }
+      } else if (haEnabled && haContext != null &&
+          haContext.getState().getServiceState() == OBSERVER) {
+        for (LocatedBlock b : res.blocks.getLocatedBlocks()) {
+          if (b.getLocations() == null || b.getLocations().length == 0) {
+            throw new ObserverRetryOnActiveException("Zero blocklocations for "
+                + srcArg);
           }
         }
       }
@@ -1957,34 +2020,16 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       final long now = now();
       try {
         checkOperation(OperationCategory.WRITE);
-        /**
-         * Resolve the path again and update the atime only when the file
-         * exists.
-         *
-         * XXX: Races can still occur even after resolving the path again.
-         * For example:
-         *
-         * <ul>
-         *   <li>Get the block location for "/a/b"</li>
-         *   <li>Rename "/a/b" to "/c/b"</li>
-         *   <li>The second resolution still points to "/a/b", which is
-         *   wrong.</li>
-         * </ul>
-         *
-         * The behavior is incorrect but consistent with the one before
-         * HDFS-7463. A better fix is to change the edit log of SetTime to
-         * use inode id instead of a path.
-         */
-        final INodesInPath iip = dir.resolvePath(pc, srcArg, DirOp.READ);
-        src = iip.getPath();
-
-        INode inode = iip.getLastINode();
-        boolean updateAccessTime = inode != null &&
+        boolean updateAccessTime =
             now > inode.getAccessTime() + dir.getAccessTimePrecision();
         if (!isInSafeMode() && updateAccessTime) {
-          boolean changed = FSDirAttrOp.setTimes(dir, iip, -1, now, false);
-          if (changed) {
-            getEditLog().logTimes(src, -1, now);
+          if (!inode.isDeleted()) {
+            src = inode.getFullPathName();
+            final INodesInPath iip = dir.resolvePath(pc, src, DirOp.READ);
+            boolean changed = FSDirAttrOp.setTimes(dir, iip, -1, now, false);
+            if (changed) {
+              getEditLog().logTimes(src, -1, now);
+            }
           }
         }
       } catch (Throwable e) {
@@ -2403,16 +2448,28 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       iip = FSDirWriteFileOp.resolvePathForStartFile(
           dir, pc, src, flag, createParent);
 
-      if (shouldReplicate ||
-          (org.apache.commons.lang.StringUtils.isEmpty(ecPolicyName) &&
-          !FSDirErasureCodingOp.hasErasureCodingPolicy(this, iip))) {
-        blockManager.verifyReplication(src, replication, clientMachine);
-      }
 
       if (blockSize < minBlockSize) {
         throw new IOException("Specified block size is less than configured" +
             " minimum value (" + DFSConfigKeys.DFS_NAMENODE_MIN_BLOCK_SIZE_KEY
             + "): " + blockSize + " < " + minBlockSize);
+      }
+
+      if (shouldReplicate) {
+        blockManager.verifyReplication(src, replication, clientMachine);
+      } else {
+        final ErasureCodingPolicy ecPolicy = FSDirErasureCodingOp
+            .getErasureCodingPolicy(this, ecPolicyName, iip);
+        if (ecPolicy != null && (!ecPolicy.isReplicationPolicy())) {
+          checkErasureCodingSupported("createWithEC");
+          if (blockSize < ecPolicy.getCellSize()) {
+            throw new IOException("Specified block size (" + blockSize
+                + ") is less than the cell size (" + ecPolicy.getCellSize()
+                +") of the erasure coding policy (" + ecPolicy + ").");
+          }
+        } else {
+          blockManager.verifyReplication(src, replication, clientMachine);
+        }
       }
 
       FileEncryptionInfo feInfo = null;
@@ -3021,7 +3078,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     while (iter.hasNext()) {
       writeLock();
       try {
-        for (int i = 0; i < BLOCK_DELETION_INCREMENT && iter.hasNext(); i++) {
+        for (int i = 0; i < blockDeletionIncrement && iter.hasNext(); i++) {
           blockManager.removeBlock(iter.next());
         }
       } finally {
@@ -3546,6 +3603,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
 
   @Override
   public INodeFile getBlockCollection(long id) {
+    assert hasReadLock() : "Accessing INode id = " + id + " without read lock";
     INode inode = getFSDirectory().getInode(id);
     return inode == null ? null : inode.asFile();
   }
@@ -4046,7 +4104,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
         while (it.hasNext()) {
           Block b = it.next();
           BlockInfo blockInfo = blockManager.getStoredBlock(b);
-          if (blockInfo == null) {
+          if (blockInfo == null || blockInfo.isDeleted()) {
             LOG.info("Cannot find block info for block " + b);
           } else {
             BlockCollection bc = getBlockCollection(blockInfo);
@@ -4081,10 +4139,12 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
         try {
           if (!isInSafeMode()) {
             clearCorruptLazyPersistFiles();
+            // set the timeStamp of last Cycle.
+            lazyPersistFileScrubberTS.set(Time.monotonicNow());
           } else {
             if (FSNamesystem.LOG.isDebugEnabled()) {
-              FSNamesystem.LOG
-                  .debug("Namenode is in safemode, skipping scrubbing of corrupted lazy-persist files.");
+              FSNamesystem.LOG.debug("Namenode is in safemode, skipping "
+                  + "scrubbing of corrupted lazy-persist files.");
             }
           }
         } catch (Exception e) {
@@ -4203,7 +4263,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     return new ReplicatedBlockStats(getLowRedundancyReplicatedBlocks(),
         getCorruptReplicatedBlocks(), getMissingReplicatedBlocks(),
         getMissingReplicationOneBlocks(), getBytesInFutureReplicatedBlocks(),
-        getPendingDeletionReplicatedBlocks());
+        getPendingDeletionReplicatedBlocks(),
+        getHighestPriorityLowRedundancyReplicatedBlocks());
   }
 
   /**
@@ -4215,7 +4276,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   ECBlockGroupStats getECBlockGroupStats() {
     return new ECBlockGroupStats(getLowRedundancyECBlockGroups(),
         getCorruptECBlockGroups(), getMissingECBlockGroups(),
-        getBytesInFutureECBlockGroups(), getPendingDeletionECBlocks());
+        getBytesInFutureECBlockGroups(), getPendingDeletionECBlocks(),
+        getHighestPriorityLowRedundancyECBlocks());
   }
 
   @Override // FSNamesystemMBean
@@ -4820,6 +4882,20 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       "blocks with replication factor 1"})
   public long getMissingReplicationOneBlocks() {
     return blockManager.getMissingReplicationOneBlocks();
+  }
+
+  @Override // ReplicatedBlocksMBean
+  @Metric({"HighestPriorityLowRedundancyReplicatedBlocks", "Number of " +
+      "replicated blocks which have the highest risk of loss."})
+  public long getHighestPriorityLowRedundancyReplicatedBlocks() {
+    return blockManager.getHighestPriorityReplicatedBlockCount();
+  }
+
+  @Override // ReplicatedBlocksMBean
+  @Metric({"HighestPriorityLowRedundancyECBlocks", "Number of erasure coded " +
+      "blocks which have the highest risk of loss."})
+  public long getHighestPriorityLowRedundancyECBlocks() {
+    return blockManager.getHighestPriorityECBlockCount();
   }
 
   @Override // ReplicatedBlocksMBean
@@ -5497,7 +5573,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
           if (src.startsWith(path)){
             corruptFiles.add(new CorruptFileBlockInfo(src, blk));
             count++;
-            if (count >= DEFAULT_MAX_CORRUPT_FILEBLOCKS_RETURNED)
+            if (count >= maxCorruptFileBlocksReturn)
               break;
           }
         }
@@ -6182,6 +6258,11 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     return blockManager;
   }
 
+  @VisibleForTesting
+  public void setBlockManagerForTesting(BlockManager bm) {
+    this.blockManager = bm;
+  }
+
   /** @return the FSDirectory. */
   @Override
   public FSDirectory getFSDirectory() {
@@ -6462,13 +6543,13 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     logAuditEvent(success, operationName, oldSnapshotRoot,
         newSnapshotRoot, null);
   }
-  
+
   /**
    * Get the list of snapshottable directories that are owned 
    * by the current user. Return all the snapshottable directories if the 
    * current user is a super user.
-   * @return The list of all the current snapshottable directories
-   * @throws IOException
+   * @return The list of all the current snapshottable directories.
+   * @throws IOException If an I/O error occurred.
    */
   public SnapshottableDirectoryStatus[] getSnapshottableDirListing()
       throws IOException {
@@ -7245,7 +7326,6 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       final FileStatus resultingStat;
       writeLock();
       try {
-        checkSuperuserPrivilege(pc);
         checkOperation(OperationCategory.WRITE);
         checkNameNodeSafeMode("Cannot create encryption zone on " + src);
         resultingStat = FSDirEncryptionZoneOp.createEncryptionZone(dir, src,
@@ -7306,7 +7386,6 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     readLock();
     try {
       checkOperation(OperationCategory.READ);
-      checkSuperuserPrivilege(pc);
       final BatchedListEntries<EncryptionZone> ret =
           FSDirEncryptionZoneOp.listEncryptionZones(dir, prevId);
       success = true;
@@ -7344,7 +7423,6 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     readLock();
     try {
       checkOperation(OperationCategory.READ);
-      checkSuperuserPrivilege(pc);
       final BatchedListEntries<ZoneReencryptionStatus> ret =
           FSDirEncryptionZoneOp.listReencryptionStatus(dir, prevId);
       success = true;
@@ -7375,7 +7453,6 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     }
     writeLock();
     try {
-      checkSuperuserPrivilege(pc);
       checkOperation(OperationCategory.WRITE);
       checkNameNodeSafeMode("NameNode in safemode, cannot " + action
           + " re-encryption on zone " + zone);
@@ -7425,6 +7502,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       UnresolvedLinkException, SafeModeException, AccessControlException {
     final String operationName = "setErasureCodingPolicy";
     checkOperation(OperationCategory.WRITE);
+    checkErasureCodingSupported(operationName);
     FileStatus resultingStat = null;
     final FSPermissionChecker pc = getPermissionChecker();
     boolean success = false;
@@ -7455,9 +7533,11 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       ErasureCodingPolicy[] policies, final boolean logRetryCache)
       throws IOException {
     final String operationName = "addErasureCodingPolicies";
-    String addECPolicyName = "";
+    List<String> addECPolicyNames = new ArrayList<>(policies.length);
     checkOperation(OperationCategory.WRITE);
-    List<AddErasureCodingPolicyResponse> responses = new ArrayList<>();
+    checkErasureCodingSupported(operationName);
+    List<AddErasureCodingPolicyResponse> responses =
+        new ArrayList<>(policies.length);
     boolean success = false;
     writeLock();
     try {
@@ -7468,7 +7548,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
           ErasureCodingPolicy newPolicy =
               FSDirErasureCodingOp.addErasureCodingPolicy(this, policy,
                   logRetryCache);
-          addECPolicyName = newPolicy.getName();
+          addECPolicyNames.add(newPolicy.getName());
           responses.add(new AddErasureCodingPolicyResponse(newPolicy));
         } catch (HadoopIllegalArgumentException e) {
           responses.add(new AddErasureCodingPolicyResponse(policy, e));
@@ -7481,7 +7561,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       if (success) {
         getEditLog().logSync();
       }
-      logAuditEvent(success, operationName, addECPolicyName, null, null);
+      logAuditEvent(success, operationName, addECPolicyNames.toString(),
+          null, null);
     }
   }
 
@@ -7496,6 +7577,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       final boolean logRetryCache) throws IOException {
     final String operationName = "removeErasureCodingPolicy";
     checkOperation(OperationCategory.WRITE);
+    checkErasureCodingSupported(operationName);
     boolean success = false;
     writeLock();
     try {
@@ -7519,29 +7601,32 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
    * @param ecPolicyName the name of the policy to be enabled
    * @param logRetryCache whether to record RPC ids in editlog for retry cache
    *                      rebuilding
+   * @return
    * @throws IOException
    */
-  void enableErasureCodingPolicy(String ecPolicyName,
+  boolean enableErasureCodingPolicy(String ecPolicyName,
       final boolean logRetryCache) throws IOException {
     final String operationName = "enableErasureCodingPolicy";
     checkOperation(OperationCategory.WRITE);
+    checkErasureCodingSupported(operationName);
     boolean success = false;
-    LOG.info("Enable the erasure coding policy " + ecPolicyName);
     writeLock();
     try {
       checkOperation(OperationCategory.WRITE);
       checkNameNodeSafeMode("Cannot enable erasure coding policy "
           + ecPolicyName);
-      FSDirErasureCodingOp.enableErasureCodingPolicy(this, ecPolicyName,
-          logRetryCache);
-      success = true;
+      success = FSDirErasureCodingOp.enableErasureCodingPolicy(this,
+          ecPolicyName, logRetryCache);
+    } catch (AccessControlException ace) {
+      logAuditEvent(false, operationName, ecPolicyName, null, null);
     } finally {
       writeUnlock(operationName);
       if (success) {
         getEditLog().logSync();
+        logAuditEvent(success, operationName, ecPolicyName, null, null);
       }
-      logAuditEvent(success, operationName, ecPolicyName, null, null);
     }
+    return success;
   }
 
   /**
@@ -7551,10 +7636,11 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
    *                      rebuilding
    * @throws IOException
    */
-  void disableErasureCodingPolicy(String ecPolicyName,
+  boolean disableErasureCodingPolicy(String ecPolicyName,
       final boolean logRetryCache) throws IOException {
     final String operationName = "disableErasureCodingPolicy";
     checkOperation(OperationCategory.WRITE);
+    checkErasureCodingSupported(operationName);
     boolean success = false;
     LOG.info("Disable the erasure coding policy " + ecPolicyName);
     writeLock();
@@ -7562,16 +7648,18 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       checkOperation(OperationCategory.WRITE);
       checkNameNodeSafeMode("Cannot disable erasure coding policy "
           + ecPolicyName);
-      FSDirErasureCodingOp.disableErasureCodingPolicy(this, ecPolicyName,
-          logRetryCache);
-      success = true;
+      success = FSDirErasureCodingOp.disableErasureCodingPolicy(this,
+          ecPolicyName, logRetryCache);
+    } catch (AccessControlException ace) {
+      logAuditEvent(false, operationName, ecPolicyName, null, null);
     } finally {
       writeUnlock(operationName);
       if (success) {
         getEditLog().logSync();
+        logAuditEvent(success, operationName, ecPolicyName, null, null);
       }
-      logAuditEvent(success, operationName, ecPolicyName, null, null);
     }
+    return success;
   }
 
   /**
@@ -7586,6 +7674,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       UnresolvedLinkException, SafeModeException, AccessControlException {
     final String operationName = "unsetErasureCodingPolicy";
     checkOperation(OperationCategory.WRITE);
+    checkErasureCodingSupported(operationName);
     FileStatus resultingStat = null;
     final FSPermissionChecker pc = getPermissionChecker();
     boolean success = false;
@@ -7613,6 +7702,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     final String operationName = "getErasureCodingPolicy";
     boolean success = false;
     checkOperation(OperationCategory.READ);
+    checkErasureCodingSupported(operationName);
     final FSPermissionChecker pc = getPermissionChecker();
     readLock();
     try {
@@ -7634,6 +7724,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     final String operationName = "getErasureCodingPolicies";
     boolean success = false;
     checkOperation(OperationCategory.READ);
+    checkErasureCodingSupported(operationName);
     readLock();
     try {
       checkOperation(OperationCategory.READ);
@@ -7654,6 +7745,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     final String operationName = "getErasureCodingCodecs";
     boolean success = false;
     checkOperation(OperationCategory.READ);
+    checkErasureCodingSupported(operationName);
     readLock();
     try {
       checkOperation(OperationCategory.READ);
@@ -8037,6 +8129,20 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       return "enableRestoreFailedStorage";
     } else {
       return "disableRestoreFailedStorage";
+    }
+  }
+
+  /**
+   * Check whether operation is supported.
+   * @param operationName the name of operation.
+   * @throws UnsupportedActionException throws UAE if not supported.
+   */
+  public void checkErasureCodingSupported(String operationName)
+      throws UnsupportedActionException {
+    if (!NameNodeLayoutVersion.supports(
+        NameNodeLayoutVersion.Feature.ERASURE_CODING,
+        getEffectiveLayoutVersion())) {
+      throw new UnsupportedActionException(operationName + " not supported.");
     }
   }
 }

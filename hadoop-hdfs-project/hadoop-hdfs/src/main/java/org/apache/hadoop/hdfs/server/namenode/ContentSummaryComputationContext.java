@@ -188,9 +188,11 @@ public class ContentSummaryComputationContext {
           String ecPolicyName = WritableUtils.readString(din);
           return dir.getFSNamesystem()
               .getErasureCodingPolicyManager()
-              .getEnabledPolicyByName(ecPolicyName)
+              .getErasureCodingPolicyByName(ecPolicyName)
               .getName();
         }
+      } else if (inode.getParent() != null) {
+          return getErasureCodingPolicyName(inode.getParent());
       }
     } catch (IOException ioe) {
       LOG.warn("Encountered error getting ec policy for "

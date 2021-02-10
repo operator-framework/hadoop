@@ -29,6 +29,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -207,7 +208,23 @@ public abstract class FSImageTestUtil {
     editLog.initJournalsForWrite();
     return editLog;
   }
-  
+
+  public static INodeFile createEmptyInodeFile(long id, String name,
+      PermissionStatus permissions, long mtime, long atime, short replication,
+      long preferredBlockSize) {
+    return new INodeFile(id, name.getBytes(StandardCharsets.UTF_8),
+        permissions, mtime, atime, null, replication, preferredBlockSize);
+  }
+
+  public static FSEditLog createEditLogWithJournalManager(Configuration conf,
+      NNStorage storage, URI editsUri, final JournalManager manager) {
+    return new FSEditLog(conf, storage, ImmutableList.of(editsUri)) {
+      @Override
+      protected JournalManager createJournal(URI uri) {
+        return manager;
+      }
+    };
+  }
 
   /**
    * Create an aborted in-progress log in the given directory, containing
@@ -571,6 +588,19 @@ public abstract class FSImageTestUtil {
       Arrays.sort(files);
       for (File f : files) {
         LOG.info("  file " + f.getAbsolutePath() + "; len = " + f.length());  
+      }
+    }
+  }
+
+  public static void logStorageContents(org.slf4j.Logger LOG, NNStorage storage) {
+    LOG.info("current storages and corresponding sizes:");
+    for (StorageDirectory sd : storage.dirIterable(null)) {
+      File curDir = sd.getCurrentDir();
+      LOG.info("In directory {}", curDir);
+      File[] files = curDir.listFiles();
+      Arrays.sort(files);
+      for (File f : files) {
+        LOG.info("  file {}; len = {}",  f.getAbsolutePath(), f.length());
       }
     }
   }

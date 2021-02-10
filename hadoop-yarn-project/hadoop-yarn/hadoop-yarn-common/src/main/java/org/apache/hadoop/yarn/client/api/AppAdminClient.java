@@ -26,6 +26,7 @@ import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -281,5 +282,47 @@ public abstract class AppAdminClient extends CompositeService {
   @Unstable
   public abstract int actionCleanUp(String appName, String userName) throws
       IOException, YarnException;
+
+  @Public
+  @Unstable
+  public abstract String getInstances(String appName,
+      List<String> components, String version, List<String> containerStates)
+      throws IOException, YarnException;
+
+  /**
+   * Express upgrade a long running service.
+   *
+   * @param appName  the name of the application
+   * @param fileName specification of application upgrade to save.
+   * @return exit code
+   */
+  @Public
+  @Unstable
+  public abstract int actionUpgradeExpress(String appName, File fileName)
+      throws IOException, YarnException;
+
+  /**
+   * Cancels the upgrade of the service.
+   *
+   * @param appName the name of the application
+   * @return exit code
+   * @throws IOException
+   * @throws YarnException
+   */
+  @Public
+  @Unstable
+  public abstract int actionCancelUpgrade(String appName) throws IOException,
+      YarnException;
+
+  /**
+   * Decommission component instances of a long running service.
+   *
+   * @param appName            the name of the application.
+   * @param componentInstances the name of the component instances.
+   */
+  @Public
+  @Unstable
+  public abstract int actionDecommissionInstances(String appName,
+      List<String> componentInstances) throws IOException, YarnException;
 
 }

@@ -349,11 +349,12 @@ public class PBHelperClient {
   }
 
   public static TokenProto convert(Token<?> tok) {
-    return TokenProto.newBuilder().
+    TokenProto.Builder builder = TokenProto.newBuilder().
         setIdentifier(getByteString(tok.getIdentifier())).
         setPassword(getByteString(tok.getPassword())).
         setKindBytes(getFixedByteString(tok.getKind())).
-        setServiceBytes(getFixedByteString(tok.getService())).build();
+        setServiceBytes(getFixedByteString(tok.getService()));
+    return builder.build();
   }
 
   public static ShortCircuitShmIdProto convert(ShmId shmId) {
@@ -774,6 +775,11 @@ public class PBHelperClient {
     for (String storageId : blockTokenSecret.getStorageIds()) {
       builder.addStorageIds(storageId);
     }
+
+    byte[] handshake = blockTokenSecret.getHandshakeMsg();
+    if (handshake != null && handshake.length > 0) {
+      builder.setHandshakeSecret(getByteString(handshake));
+    }
     return builder.build();
   }
 
@@ -826,9 +832,11 @@ public class PBHelperClient {
 
   public static Token<BlockTokenIdentifier> convert(
       TokenProto blockToken) {
-    return new Token<>(blockToken.getIdentifier()
+    Token<BlockTokenIdentifier> token =
+        new Token<>(blockToken.getIdentifier()
         .toByteArray(), blockToken.getPassword().toByteArray(), new Text(
         blockToken.getKind()), new Text(blockToken.getService()));
+    return token;
   }
 
   // DatanodeId
@@ -1990,6 +1998,13 @@ public class PBHelperClient {
 
   public static ReplicatedBlockStats convert(
       GetFsReplicatedBlockStatsResponseProto res) {
+    if (res.hasHighestPrioLowRedundancyBlocks()) {
+      return new ReplicatedBlockStats(res.getLowRedundancy(),
+          res.getCorruptBlocks(), res.getMissingBlocks(),
+          res.getMissingReplOneBlocks(), res.getBlocksInFuture(),
+          res.getPendingDeletionBlocks(),
+          res.getHighestPrioLowRedundancyBlocks());
+    }
     return new ReplicatedBlockStats(res.getLowRedundancy(),
         res.getCorruptBlocks(), res.getMissingBlocks(),
         res.getMissingReplOneBlocks(), res.getBlocksInFuture(),
@@ -1998,6 +2013,12 @@ public class PBHelperClient {
 
   public static ECBlockGroupStats convert(
       GetFsECBlockGroupStatsResponseProto res) {
+    if (res.hasHighestPrioLowRedundancyBlocks()) {
+      return new ECBlockGroupStats(res.getLowRedundancy(),
+          res.getCorruptBlocks(), res.getMissingBlocks(),
+          res.getBlocksInFuture(), res.getPendingDeletionBlocks(),
+          res.getHighestPrioLowRedundancyBlocks());
+    }
     return new ECBlockGroupStats(res.getLowRedundancy(),
         res.getCorruptBlocks(), res.getMissingBlocks(),
         res.getBlocksInFuture(), res.getPendingDeletionBlocks());
@@ -2432,6 +2453,10 @@ public class PBHelperClient {
         replicatedBlockStats.getBytesInFutureBlocks());
     result.setPendingDeletionBlocks(
         replicatedBlockStats.getPendingDeletionBlocks());
+    if (replicatedBlockStats.hasHighestPriorityLowRedundancyBlocks()) {
+      result.setHighestPrioLowRedundancyBlocks(
+          replicatedBlockStats.getHighestPriorityLowRedundancyBlocks());
+    }
     return result.build();
   }
 
@@ -2447,6 +2472,10 @@ public class PBHelperClient {
         ecBlockGroupStats.getBytesInFutureBlockGroups());
     result.setPendingDeletionBlocks(
         ecBlockGroupStats.getPendingDeletionBlocks());
+    if (ecBlockGroupStats.hasHighestPriorityLowRedundancyBlocks()) {
+      result.setHighestPrioLowRedundancyBlocks(
+          ecBlockGroupStats.getHighestPriorityLowRedundancyBlocks());
+    }
     return result.build();
   }
 

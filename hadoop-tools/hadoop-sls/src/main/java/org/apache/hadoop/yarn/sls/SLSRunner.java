@@ -55,6 +55,7 @@ import org.apache.hadoop.tools.rumen.LoggedTaskAttempt;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
+import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ExecutionType;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeState;
@@ -75,6 +76,7 @@ import org.apache.hadoop.yarn.sls.conf.SLSConfiguration;
 import org.apache.hadoop.yarn.sls.nodemanager.NMSimulator;
 import org.apache.hadoop.yarn.sls.resourcemanager.MockAMLauncher;
 import org.apache.hadoop.yarn.sls.scheduler.SLSCapacityScheduler;
+import org.apache.hadoop.yarn.sls.scheduler.SchedulerMetrics;
 import org.apache.hadoop.yarn.sls.scheduler.TaskRunner;
 import org.apache.hadoop.yarn.sls.scheduler.SLSFairScheduler;
 import org.apache.hadoop.yarn.sls.scheduler.ContainerSimulator;
@@ -105,6 +107,7 @@ public class SLSRunner extends Configured implements Tool {
   // AM simulator
   private int AM_ID;
   private Map<String, AMSimulator> amMap;
+  private Map<ApplicationId, AMSimulator> appIdAMSim;
   private Set<String> trackedApps;
   private Map<String, Class> amClassMap;
   private static int remainingApps = 0;
@@ -162,7 +165,7 @@ public class SLSRunner extends Configured implements Tool {
     queueAppNumMap = new HashMap<>();
     amMap = new ConcurrentHashMap<>();
     amClassMap = new HashMap<>();
-
+    appIdAMSim = new ConcurrentHashMap<>();
     // runner configuration
     setConf(tempConf);
 
@@ -269,7 +272,7 @@ public class SLSRunner extends Configured implements Tool {
     rm = new ResourceManager() {
       @Override
       protected ApplicationMasterLauncher createAMLauncher() {
-        return new MockAMLauncher(se, this.rmContext, amMap);
+        return new MockAMLauncher(se, this.rmContext, appIdAMSim);
       }
     };
 
@@ -551,7 +554,7 @@ public class SLSRunner extends Configured implements Tool {
         try {
           createAMForJob(job, baselineTimeMS);
         } catch (Exception e) {
-          LOG.error("Failed to create an AM: {}", e.getMessage());
+          LOG.error("Failed to create an AM", e);
         }
 
         job = reader.getNext();
@@ -730,7 +733,10 @@ public class SLSRunner extends Configured implements Tool {
     }
 
     queueAppNumMap.put(queueName, appNum);
-    wrapper.getSchedulerMetrics().trackQueue(queueName);
+    SchedulerMetrics metrics = wrapper.getSchedulerMetrics();
+    if (metrics != null) {
+      metrics.trackQueue(queueName);
+    }
   }
 
   private void runNewAM(String jobType, String user,
@@ -763,7 +769,7 @@ public class SLSRunner extends Configured implements Tool {
       AM_ID++;
       amSim.init(heartbeatInterval, containerList, rm, this, jobStartTimeMS,
           jobFinishTimeMS, user, jobQueue, isTracked, oldJobId,
-          runner.getStartTimeMS(), amContainerResource, params);
+          runner.getStartTimeMS(), amContainerResource, params, appIdAMSim);
       if(reservationId != null) {
         // if we have a ReservationId, delegate reservation creation to
         // AMSim (reservation shape is impl specific)

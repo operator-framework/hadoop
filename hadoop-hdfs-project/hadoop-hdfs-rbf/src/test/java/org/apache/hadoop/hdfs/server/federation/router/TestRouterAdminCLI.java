@@ -115,6 +115,14 @@ public class TestRouterAdminCLI {
         Mockito.anyLong(), Mockito.anyLong(), Mockito.any());
     Whitebox.setInternalState(
         routerContext.getRouter().getRpcServer(), "quotaCall", quota);
+
+    RouterRpcServer spyRpcServer =
+        Mockito.spy(routerContext.getRouter().createRpcServer());
+    Whitebox
+        .setInternalState(routerContext.getRouter(), "rpcServer", spyRpcServer);
+
+    Mockito.doReturn(null).when(spyRpcServer).getFileInfo(Mockito.anyString());
+
   }
 
   @AfterClass
@@ -216,6 +224,24 @@ public class TestRouterAdminCLI {
     testAddOrderMountTable(DestinationOrder.HASH_ALL);
   }
 
+  @Test
+  public void testAddOrderErrorMsg() throws Exception {
+    DestinationOrder order = DestinationOrder.HASH;
+    final String mnt = "/newAdd1" + order;
+    final String nsId = "ns0,ns1";
+    final String dest = "/changAdd";
+
+    String[] argv1 = new String[] {"-add", mnt, nsId, dest, "-order",
+        order.toString()};
+    assertEquals(0, ToolRunner.run(admin, argv1));
+
+    // Add the order with wrong command
+    String[] argv = new String[] {"-add", mnt, nsId, dest, "-orde",
+        order.toString()};
+    assertEquals(-1, ToolRunner.run(admin, argv));
+
+  }
+
   private void testAddOrderMountTable(DestinationOrder order)
       throws Exception {
     final String mnt = "/" + order;
@@ -258,6 +284,13 @@ public class TestRouterAdminCLI {
     argv = new String[] {"-ls", srcWithSlash};
     assertEquals(0, ToolRunner.run(admin, argv));
     assertTrue(out.toString().contains(src));
+
+    // Test with wrong number of arguments
+    argv = new String[] {"-ls", srcWithSlash, "check", "check2"};
+    System.setErr(new PrintStream(err));
+    ToolRunner.run(admin, argv);
+    assertTrue(
+        err.toString().contains("Too many arguments, Max=1 argument allowed"));
 
     out.reset();
     GetMountTableEntriesRequest getRequest = GetMountTableEntriesRequest
@@ -309,6 +342,13 @@ public class TestRouterAdminCLI {
     assertEquals(0, ToolRunner.run(admin, argv));
     assertTrue(out.toString().contains(
         "Cannot remove mount point " + invalidPath));
+
+    // test wrong number of arguments
+    System.setErr(new PrintStream(err));
+    argv = new String[] {"-rm", src, "check" };
+    ToolRunner.run(admin, argv);
+    assertTrue(err.toString()
+        .contains("Too many arguments, Max=1 argument allowed"));
   }
 
   @Test
@@ -381,7 +421,7 @@ public class TestRouterAdminCLI {
     argv = new String[] {"-add", "/testpath2-2", "ns0", "/testdir2-2",
         "-owner", TEST_USER, "-group", TEST_USER, "-mode", "0255"};
     assertEquals(0, ToolRunner.run(admin, argv));
-    verifyExecutionResult("/testpath2-2", false, 0, 0);
+    verifyExecutionResult("/testpath2-2", false, -1, 0);
 
     // set mount table entry with read and write permission
     argv = new String[] {"-add", "/testpath2-3", "ns0", "/testdir2-3",
@@ -429,6 +469,74 @@ public class TestRouterAdminCLI {
   }
 
   @Test
+  public void testInvalidArgumentMessage() throws Exception {
+    String nsId = "ns0";
+    String src = "/testSource";
+    System.setOut(new PrintStream(out));
+    String[] argv = new String[] {"-add", src, nsId};
+    assertEquals(-1, ToolRunner.run(admin, argv));
+    assertTrue(out.toString().contains(
+        "\t[-add <source> <nameservice1, nameservice2, ...> <destination> "
+            + "[-readonly] [-order HASH|LOCAL|RANDOM|HASH_ALL] "
+            + "-owner <owner> -group <group> -mode <mode>]"));
+    out.reset();
+
+    argv = new String[] {"-update", src, nsId};
+    assertEquals(-1, ToolRunner.run(admin, argv));
+    assertTrue(out.toString().contains(
+        "\t[-update <source> <nameservice1, nameservice2, ...> <destination> "
+            + "[-readonly] [-order HASH|LOCAL|RANDOM|HASH_ALL] "
+            + "-owner <owner> -group <group> -mode <mode>]"));
+    out.reset();
+
+    argv = new String[] {"-rm"};
+    assertEquals(-1, ToolRunner.run(admin, argv));
+    assertTrue(out.toString().contains("\t[-rm <source>]"));
+    out.reset();
+
+    argv = new String[] {"-setQuota", src};
+    assertEquals(-1, ToolRunner.run(admin, argv));
+    assertTrue(out.toString()
+        .contains("\t[-setQuota <path> -nsQuota <nsQuota> -ssQuota "
+            + "<quota in bytes or quota size string>]"));
+    out.reset();
+
+    argv = new String[] {"-clrQuota"};
+    assertEquals(-1, ToolRunner.run(admin, argv));
+    assertTrue(out.toString().contains("\t[-clrQuota <path>]"));
+    out.reset();
+
+    argv = new String[] {"-safemode"};
+    assertEquals(-1, ToolRunner.run(admin, argv));
+    assertTrue(out.toString().contains("\t[-safemode enter | leave | get]"));
+    out.reset();
+
+    argv = new String[] {"-nameservice", nsId};
+    assertEquals(-1, ToolRunner.run(admin, argv));
+    assertTrue(out.toString()
+        .contains("\t[-nameservice enable | disable <nameservice>]"));
+    out.reset();
+
+    argv = new String[] {"-Random"};
+    assertEquals(-1, ToolRunner.run(admin, argv));
+    String expected = "Usage: hdfs routeradmin :\n"
+        + "\t[-add <source> <nameservice1, nameservice2, ...> <destination> "
+        + "[-readonly] [-order HASH|LOCAL|RANDOM|HASH_ALL] "
+        + "-owner <owner> -group <group> -mode <mode>]\n"
+        + "\t[-update <source> <nameservice1, nameservice2, ...> "
+        + "<destination> " + "[-readonly] [-order HASH|LOCAL|RANDOM|HASH_ALL] "
+        + "-owner <owner> -group <group> -mode <mode>]\n" + "\t[-rm <source>]\n"
+        + "\t[-ls <path>]\n"
+        + "\t[-setQuota <path> -nsQuota <nsQuota> -ssQuota "
+        + "<quota in bytes or quota size string>]\n" + "\t[-clrQuota <path>]\n"
+        + "\t[-safemode enter | leave | get]\n"
+        + "\t[-nameservice enable | disable <nameservice>]\n"
+        + "\t[-getDisabledNameservices]";
+    assertTrue(out.toString(), out.toString().contains(expected));
+    out.reset();
+  }
+
+  @Test
   public void testSetAndClearQuota() throws Exception {
     String nsId = "ns0";
     String src = "/test-QuotaMounttable";
@@ -447,10 +555,10 @@ public class TestRouterAdminCLI {
     // verify the default quota set
     assertEquals(RouterQuotaUsage.QUOTA_USAGE_COUNT_DEFAULT,
         quotaUsage.getFileAndDirectoryCount());
-    assertEquals(HdfsConstants.QUOTA_DONT_SET, quotaUsage.getQuota());
+    assertEquals(HdfsConstants.QUOTA_RESET, quotaUsage.getQuota());
     assertEquals(RouterQuotaUsage.QUOTA_USAGE_COUNT_DEFAULT,
         quotaUsage.getSpaceConsumed());
-    assertEquals(HdfsConstants.QUOTA_DONT_SET, quotaUsage.getSpaceQuota());
+    assertEquals(HdfsConstants.QUOTA_RESET, quotaUsage.getSpaceQuota());
 
     long nsQuota = 50;
     long ssQuota = 100;
@@ -494,8 +602,20 @@ public class TestRouterAdminCLI {
     quotaUsage = mountTable.getQuota();
 
     // verify if quota unset successfully
-    assertEquals(HdfsConstants.QUOTA_DONT_SET, quotaUsage.getQuota());
-    assertEquals(HdfsConstants.QUOTA_DONT_SET, quotaUsage.getSpaceQuota());
+    assertEquals(HdfsConstants.QUOTA_RESET, quotaUsage.getQuota());
+    assertEquals(HdfsConstants.QUOTA_RESET, quotaUsage.getSpaceQuota());
+
+    // verify wrong arguments
+    System.setErr(new PrintStream(err));
+    argv = new String[] {"-clrQuota", src, "check"};
+    ToolRunner.run(admin, argv);
+    assertTrue(err.toString(),
+        err.toString().contains("Too many arguments, Max=1 argument allowed"));
+
+    argv = new String[] {"-setQuota", src, "check", "check2"};
+    err.reset();
+    ToolRunner.run(admin, argv);
+    assertTrue(err.toString().contains("Invalid argument : check"));
   }
 
   @Test
@@ -511,6 +631,7 @@ public class TestRouterAdminCLI {
     assertTrue(routerContext.getRouter().getSafemodeService().isInSafeMode());
 
     System.setOut(new PrintStream(out));
+    System.setErr(new PrintStream(err));
     assertEquals(0, ToolRunner.run(admin,
         new String[] {"-safemode", "get"}));
     assertTrue(out.toString().contains("true"));
@@ -526,6 +647,19 @@ public class TestRouterAdminCLI {
     assertEquals(0, ToolRunner.run(admin,
         new String[] {"-safemode", "get"}));
     assertTrue(out.toString().contains("false"));
+
+    out.reset();
+    assertEquals(-1, ToolRunner.run(admin,
+        new String[] {"-safemode", "get", "-random", "check" }));
+    assertTrue(err.toString(), err.toString()
+        .contains("safemode: Too many arguments, Max=1 argument allowed only"));
+    err.reset();
+
+    assertEquals(-1,
+        ToolRunner.run(admin, new String[] {"-safemode", "check" }));
+    assertTrue(err.toString(),
+        err.toString().contains("safemode: Invalid argument: check"));
+    err.reset();
   }
 
   @Test
@@ -596,6 +730,15 @@ public class TestRouterAdminCLI {
         new String[] {"-nameservice", "wrong", "ns0"}));
     assertTrue("Got error: " + err.toString(),
         err.toString().startsWith("nameservice: Unknown command: wrong"));
+
+    err.reset();
+    ToolRunner.run(admin,
+        new String[] {"-nameservice", "enable", "ns0", "check"});
+    assertTrue(
+        err.toString().contains("Too many arguments, Max=2 arguments allowed"));
+    err.reset();
+    ToolRunner.run(admin, new String[] {"-getDisabledNameservices", "check"});
+    assertTrue(err.toString().contains("No arguments allowed"));
   }
 
   /**
@@ -761,6 +904,43 @@ public class TestRouterAdminCLI {
     testUpdateOrderMountTable(DestinationOrder.LOCAL);
     testUpdateOrderMountTable(DestinationOrder.RANDOM);
     testUpdateOrderMountTable(DestinationOrder.HASH_ALL);
+  }
+
+  @Test
+  public void testOrderErrorMsg() throws Exception {
+    String nsId = "ns0";
+    DestinationOrder order = DestinationOrder.HASH;
+    String src = "/testod" + order.toString();
+    String dest = "/testUpd";
+    String[] argv = new String[] {"-add", src, nsId, dest};
+    assertEquals(0, ToolRunner.run(admin, argv));
+
+    stateStore.loadCache(MountTableStoreImpl.class, true);
+    GetMountTableEntriesRequest getRequest = GetMountTableEntriesRequest
+        .newInstance(src);
+    GetMountTableEntriesResponse getResponse = client.getMountTableManager()
+        .getMountTableEntries(getRequest);
+
+    // Ensure mount table added successfully
+    MountTable mountTable = getResponse.getEntries().get(0);
+    assertEquals(src, mountTable.getSourcePath());
+    assertEquals(nsId, mountTable.getDestinations().get(0).getNameserviceId());
+    assertEquals(dest, mountTable.getDestinations().get(0).getDest());
+    assertEquals(DestinationOrder.HASH, mountTable.getDestOrder());
+
+    argv = new String[] {"-update", src, nsId, dest, "-order",
+        order.toString()};
+    assertEquals(0, ToolRunner.run(admin, argv));
+
+    // Update the order with wrong command
+    argv = new String[] {"-update", src + "a", nsId, dest + "a", "-orde",
+        order.toString()};
+    assertEquals(-1, ToolRunner.run(admin, argv));
+
+    // Update without order argument
+    argv = new String[] {"-update", src, nsId, dest, order.toString()};
+    assertEquals(-1, ToolRunner.run(admin, argv));
+
   }
 
   private void testUpdateOrderMountTable(DestinationOrder order)

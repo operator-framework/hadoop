@@ -1132,7 +1132,6 @@ public class DatanodeManager {
           nodeDescr.setDependentHostNames(
               getNetworkDependenciesWithDefault(nodeDescr));
         }
-        networktopology.add(nodeDescr);
         nodeDescr.setSoftwareVersion(nodeReg.getSoftwareVersion());
         resolveUpgradeDomain(nodeDescr);
 
@@ -1540,7 +1539,7 @@ public class DatanodeManager {
   }
 
   private BlockRecoveryCommand getBlockRecoveryCommand(String blockPoolId,
-      DatanodeDescriptor nodeinfo) {
+      DatanodeDescriptor nodeinfo) throws IOException {
     BlockInfo[] blocks = nodeinfo.getLeaseRecoveryCommand(Integer.MAX_VALUE);
     if (blocks == null) {
       return null;
@@ -1548,7 +1547,10 @@ public class DatanodeManager {
     BlockRecoveryCommand brCommand = new BlockRecoveryCommand(blocks.length);
     for (BlockInfo b : blocks) {
       BlockUnderConstructionFeature uc = b.getUnderConstructionFeature();
-      assert uc != null;
+      if(uc == null) {
+        throw new IOException("Recovery block " + b +
+            "where it is not under construction.");
+      }
       final DatanodeStorageInfo[] storages = uc.getExpectedStorageLocations();
       // Skip stale nodes during recovery
       final List<DatanodeStorageInfo> recoveryLocations =
@@ -1685,8 +1687,24 @@ public class DatanodeManager {
       List<BlockTargetPair> pendingList = nodeinfo.getReplicationCommand(
           numReplicationTasks);
       if (pendingList != null && !pendingList.isEmpty()) {
-        cmds.add(new BlockCommand(DatanodeProtocol.DNA_TRANSFER, blockPoolId,
-            pendingList));
+        // If the block is deleted, the block size will become
+        // BlockCommand.NO_ACK (LONG.MAX_VALUE) . This kind of block we don't
+        // need
+        // to send for replication or reconstruction
+        Iterator<BlockTargetPair> iterator = pendingList.iterator();
+        while (iterator.hasNext()) {
+          BlockTargetPair cmd = iterator.next();
+          if (cmd.block != null
+              && cmd.block.getNumBytes() == BlockCommand.NO_ACK) {
+            // block deleted
+            DatanodeStorageInfo.decrementBlocksScheduled(cmd.targets);
+            iterator.remove();
+          }
+        }
+        if (!pendingList.isEmpty()) {
+          cmds.add(new BlockCommand(DatanodeProtocol.DNA_TRANSFER, blockPoolId,
+              pendingList));
+        }
       }
       // check pending erasure coding tasks
       List<BlockECReconstructionInfo> pendingECList = nodeinfo

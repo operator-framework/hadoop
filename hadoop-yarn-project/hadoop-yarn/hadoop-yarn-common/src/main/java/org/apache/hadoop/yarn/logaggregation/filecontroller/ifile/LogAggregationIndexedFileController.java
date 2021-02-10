@@ -145,26 +145,6 @@ public class LogAggregationIndexedFileController
           + " use LogAggregationIndexedFileController when the FileSystem "
           + "support append operations.");
     }
-    String remoteDirStr = String.format(
-        YarnConfiguration.LOG_AGGREGATION_REMOTE_APP_LOG_DIR_FMT,
-        this.fileControllerName);
-    String remoteDir = conf.get(remoteDirStr);
-    if (remoteDir == null || remoteDir.isEmpty()) {
-      remoteDir = conf.get(YarnConfiguration.NM_REMOTE_APP_LOG_DIR,
-          YarnConfiguration.DEFAULT_NM_REMOTE_APP_LOG_DIR);
-    }
-    this.remoteRootLogDir = new Path(remoteDir);
-    String suffix = String.format(
-        YarnConfiguration.LOG_AGGREGATION_REMOTE_APP_LOG_DIR_SUFFIX_FMT,
-        this.fileControllerName);
-    this.remoteRootLogDirSuffix = conf.get(suffix);
-    if (this.remoteRootLogDirSuffix == null
-        || this.remoteRootLogDirSuffix.isEmpty()) {
-      this.remoteRootLogDirSuffix = conf.get(
-          YarnConfiguration.NM_REMOTE_APP_LOG_DIR_SUFFIX,
-          YarnConfiguration.DEFAULT_NM_REMOTE_APP_LOG_DIR_SUFFIX)
-          + "-ifile";
-    }
     String compressName = conf.get(
         YarnConfiguration.NM_LOG_AGG_COMPRESSION_TYPE,
         YarnConfiguration.DEFAULT_NM_LOG_AGG_COMPRESSION_TYPE);
@@ -404,7 +384,7 @@ public class LogAggregationIndexedFileController
         meta.setStartIndex(outputStreamState.getStartPos());
         meta.setFileSize(fileLength);
       }
-      meta.setLastModificatedTime(logFile.lastModified());
+      meta.setLastModifiedTime(logFile.lastModified());
       metas.add(meta);
     }
     logsMetaInThisCycle.addContainerLogMeta(containerId, metas);
@@ -499,12 +479,12 @@ public class LogAggregationIndexedFileController
         .getRemoteNodeFileDir(conf, appId, logRequest.getAppOwner(),
         this.remoteRootLogDir, this.remoteRootLogDirSuffix);
     if (!nodeFiles.hasNext()) {
-      throw new IOException("There is no available log fils for "
+      throw new IOException("There is no available log file for "
           + "application:" + appId);
     }
     List<FileStatus> allFiles = getAllNodeFiles(nodeFiles, appId);
     if (allFiles.isEmpty()) {
-      throw new IOException("There is no available log fils for "
+      throw new IOException("There is no available log file for "
           + "application:" + appId);
     }
     Map<String, Long> checkSumFiles = parseCheckSumFiles(allFiles);
@@ -581,7 +561,7 @@ public class LogAggregationIndexedFileController
               decompressor, getFSInputBufferSize(conf));
           LogToolUtils.outputContainerLog(candidate.getContainerId(),
               nodeName, candidate.getFileName(), candidate.getFileSize(), size,
-              Times.format(candidate.getLastModificatedTime()),
+              Times.format(candidate.getLastModifiedTime()),
               in, os, buf, ContainerLogAggregationType.AGGREGATED);
           byte[] b = aggregatedLogSuffix(candidate.getFileName())
               .getBytes(Charset.forName("UTF-8"));
@@ -618,12 +598,12 @@ public class LogAggregationIndexedFileController
         .getRemoteNodeFileDir(conf, appId, appOwner, this.remoteRootLogDir,
         this.remoteRootLogDirSuffix);
     if (!nodeFiles.hasNext()) {
-      throw new IOException("There is no available log fils for "
+      throw new IOException("There is no available log file for "
           + "application:" + appId);
     }
     List<FileStatus> allFiles = getAllNodeFiles(nodeFiles, appId);
     if (allFiles.isEmpty()) {
-      throw new IOException("There is no available log fils for "
+      throw new IOException("There is no available log file for "
           + "application:" + appId);
     }
     Map<String, Long> checkSumFiles = parseCheckSumFiles(allFiles);
@@ -660,7 +640,7 @@ public class LogAggregationIndexedFileController
             for (IndexedFileLogMeta aMeta : log.getValue()) {
               meta.addLogMeta(aMeta.getFileName(), Long.toString(
                   aMeta.getFileSize()),
-                  Times.format(aMeta.getLastModificatedTime()));
+                  Times.format(aMeta.getLastModifiedTime()));
             }
             containersLogMeta.add(meta);
           }
@@ -671,7 +651,7 @@ public class LogAggregationIndexedFileController
               logMeta.getContainerLogMeta(containerIdStr)) {
             meta.addLogMeta(log.getFileName(), Long.toString(
                 log.getFileSize()),
-                Times.format(log.getLastModificatedTime()));
+                Times.format(log.getLastModifiedTime()));
           }
           containersLogMeta.add(meta);
         }
@@ -1002,7 +982,7 @@ public class LogAggregationIndexedFileController
     private String fileName;
     private long fileSize;
     private long fileCompressedSize;
-    private long lastModificatedTime;
+    private long lastModifiedTime;
     private long startIndex;
 
     public String getFileName() {
@@ -1026,11 +1006,11 @@ public class LogAggregationIndexedFileController
       this.fileCompressedSize = fileCompressedSize;
     }
 
-    public long getLastModificatedTime() {
-      return lastModificatedTime;
+    public long getLastModifiedTime() {
+      return lastModifiedTime;
     }
-    public void setLastModificatedTime(long lastModificatedTime) {
-      this.lastModificatedTime = lastModificatedTime;
+    public void setLastModifiedTime(long lastModifiedTime) {
+      this.lastModifiedTime = lastModifiedTime;
     }
 
     public long getStartIndex() {

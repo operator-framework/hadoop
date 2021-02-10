@@ -71,6 +71,8 @@ Each metrics record contains tags such as Hostname and port (number to which ser
 | `SentBytes` | Total number of sent bytes |
 | `RpcQueueTimeNumOps` | Total number of RPC calls |
 | `RpcQueueTimeAvgTime` | Average queue time in milliseconds |
+| `RpcLockWaitTimeNumOps` | Total number of RPC call (same as RpcQueueTimeNumOps) |
+| `RpcLockWaitTimeAvgTime` | Average time waiting for lock acquisition in milliseconds |
 | `RpcProcessingTimeNumOps` | Total number of RPC calls (same to RpcQueueTimeNumOps) |
 | `RpcProcessingAvgTime` | Average Processing time in milliseconds |
 | `RpcAuthenticationFailures` | Total number of authentication failures |
@@ -92,6 +94,12 @@ Each metrics record contains tags such as Hostname and port (number to which ser
 | `rpcProcessingTime`*num*`s90thPercentileLatency` | Shows the 90th percentile of RPC processing time in milliseconds (*num* seconds granularity) if `rpc.metrics.quantile.enable` is set to true. *num* is specified by `rpc.metrics.percentiles.intervals`. |
 | `rpcProcessingTime`*num*`s95thPercentileLatency` | Shows the 95th percentile of RPC processing time in milliseconds (*num* seconds granularity) if `rpc.metrics.quantile.enable` is set to true. *num* is specified by `rpc.metrics.percentiles.intervals`. |
 | `rpcProcessingTime`*num*`s99thPercentileLatency` | Shows the 99th percentile of RPC processing time in milliseconds (*num* seconds granularity) if `rpc.metrics.quantile.enable` is set to true. *num* is specified by `rpc.metrics.percentiles.intervals`. |
+| `rpcLockWaitTime`*num*`sNumOps` | Shows total number of RPC calls (*num* seconds granularity) if `rpc.metrics.quantile.enable` is set to true. *num* is specified by `rpc.metrics.percentiles.intervals`. |
+| `rpcLockWaitTime`*num*`s50thPercentileLatency` | Shows the 50th percentile of RPC lock wait time in milliseconds (*num* seconds granularity) if `rpc.metrics.quantile.enable` is set to true. *num* is specified by `rpc.metrics.percentiles.intervals`. |
+| `rpcLockWaitTime`*num*`s75thPercentileLatency` | Shows the 75th percentile of RPC lock wait time in milliseconds (*num* seconds granularity) if `rpc.metrics.quantile.enable` is set to true. *num* is specified by `rpc.metrics.percentiles.intervals`. |
+| `rpcLockWaitTime`*num*`s90thPercentileLatency` | Shows the 90th percentile of RPC lock wait time in milliseconds (*num* seconds granularity) if `rpc.metrics.quantile.enable` is set to true. *num* is specified by `rpc.metrics.percentiles.intervals`. |
+| `rpcLockWaitTime`*num*`s95thPercentileLatency` | Shows the 95th percentile of RPC lock wait time in milliseconds (*num* seconds granularity) if `rpc.metrics.quantile.enable` is set to true. *num* is specified by `rpc.metrics.percentiles.intervals`. |
+| `rpcLockWaitTime`*num*`s99thPercentileLatency` | Shows the 99th percentile of RPC lock wait time in milliseconds (*num* seconds granularity) if `rpc.metrics.quantile.enable` is set to true. *num* is specified by `rpc.metrics.percentiles.intervals`. |
 
 RetryCache/NameNodeRetryCache
 -----------------------------
@@ -104,10 +112,21 @@ RetryCache metrics is useful to monitor NameNode fail-over. Each metrics record 
 | `CacheCleared` | Total number of RetryCache cleared |
 | `CacheUpdated` | Total number of RetryCache updated |
 
+FairCallQueue
+-------------
+
+FairCallQueue metrics will only exist if FairCallQueue is enabled. Each metric exists for each level of priority.
+
+| Name | Description |
+|:---- |:---- |
+| `FairCallQueueSize_p`*Priority* | Current number of calls in priority queue |
+| `FairCallQueueOverflowedCalls_p`*Priority* | Total number of overflowed calls in priority queue |
+
 rpcdetailed context
 ===================
 
 Metrics of rpcdetailed context are exposed in unified manner by RPC layer. Two metrics are exposed for each RPC based on its name. Metrics named "(RPC method name)NumOps" indicates total number of method calls, and metrics named "(RPC method name)AvgTime" shows average turn around time for method calls in milliseconds.
+Please note that the AvgTime metrics do not include time spent waiting to acquire locks on data structures (see RpcLockWaitTimeAvgTime).
 
 rpcdetailed
 -----------
@@ -240,6 +259,8 @@ Each metrics record contains tags such as HAState and Hostname as additional inf
 | `StaleDataNodes` | Current number of DataNodes marked stale due to delayed heartbeat |
 | `NumStaleStorages` | Number of storages marked as content stale (after NameNode restart/failover before first block report is received) |
 | `MissingReplOneBlocks` | Current number of missing blocks with replication factor 1 |
+| `HighestPriorityLowRedundancyReplicatedBlocks` | Current number of non-corrupt, low redundancy replicated blocks with the highest risk of loss (have 0 or 1 replica). Will be recovered with the highest priority. |
+| `HighestPriorityLowRedundancyECBlocks` | Current number of non-corrupt, low redundancy EC blocks with the highest risk of loss. Will be recovered with the highest priority. |
 | `NumFilesUnderConstruction` | Current number of files under construction |
 | `NumActiveClients` | Current number of active clients holding lease |
 | `HAState` | (HA-only) Current state of the NameNode: initializing or active or standby or stopping state |
@@ -252,8 +273,10 @@ Each metrics record contains tags such as HAState and Hostname as additional inf
 | `NumInMaintenanceLiveDataNodes` | Number of live Datanodes which are in maintenance state |
 | `NumInMaintenanceDeadDataNodes` | Number of dead Datanodes which are in maintenance state |
 | `NumEnteringMaintenanceDataNodes` | Number of Datanodes that are entering the maintenance state |
-| `FSN(Read/Write)Lock`*OperationName*`NumOps` | Total number of acquiring lock by operations |
-| `FSN(Read/Write)Lock`*OperationName*`AvgTime` | Average time of holding the lock by operations in milliseconds |
+| `FSN(Read/Write)Lock`*OperationName*`NanosNumOps` | Total number of acquiring lock by operations |
+| `FSN(Read/Write)Lock`*OperationName*`NanosAvgTime` | Average time of holding the lock by operations in nanoseconds |
+| `FSN(Read/Write)LockOverallNanosNumOps`  | Total number of acquiring lock by all operations |
+| `FSN(Read/Write)LockOverallNanosAvgTime` | Average time of holding the lock by all operations in nanoseconds |
 
 JournalNode
 -----------
@@ -307,6 +330,11 @@ The server-side metrics for a journal from the JournalNode's perspective. Each m
 | `LastWrittenTxId` | The highest transaction id stored on this JournalNode |
 | `LastPromisedEpoch` | The last epoch number which this node has promised not to accept any lower epoch, or 0 if no promises have been made |
 | `LastJournalTimestamp` | The timestamp of last successfully written transaction |
+| `TxnsServedViaRpc` | Number of transactions served via the RPC mechanism |
+| `BytesServedViaRpc` | Number of bytes served via the RPC mechanism |
+| `RpcRequestCacheMissAmountNumMisses` | Number of RPC requests which could not be served due to lack of data in the cache |
+| `RpcRequestCacheMissAmountAvgTxns` | The average number of transactions by which a request missed the cache; for example if transaction ID 10 is requested and the cache's oldest transaction is ID 15, value 5 will be added to this average |
+| `RpcEmptyResponses` | Number of RPC requests with zero edits returned |
 
 datanode
 --------

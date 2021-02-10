@@ -25,6 +25,7 @@ import com.sun.jersey.api.client.ClientRequest;
 import com.sun.jersey.api.client.ClientResponse;
 import com.sun.jersey.api.client.UniformInterfaceException;
 import com.sun.jersey.api.client.WebResource;
+import com.sun.jersey.api.client.WebResource.Builder;
 import com.sun.jersey.api.client.filter.ClientFilter;
 import com.sun.jersey.client.urlconnection.HttpURLConnectionFactory;
 import com.sun.jersey.client.urlconnection.URLConnectionClientHandler;
@@ -96,6 +97,7 @@ public class LogsCLI extends Configured implements Tool {
 
   private static final String CONTAINER_ID_OPTION = "containerId";
   private static final String APPLICATION_ID_OPTION = "applicationId";
+  private static final String CLUSTER_ID_OPTION = "clusterId";
   private static final String NODE_ADDRESS_OPTION = "nodeAddress";
   private static final String APP_OWNER_OPTION = "appOwner";
   private static final String AM_CONTAINER_OPTION = "am";
@@ -134,7 +136,6 @@ public class LogsCLI extends Configured implements Tool {
   @Override
   public int run(String[] args) throws Exception {
     try {
-      yarnClient = createYarnClient();
       webServiceClient = new Client(new URLConnectionClientHandler(
           new HttpURLConnectionFactory() {
           @Override
@@ -155,6 +156,9 @@ public class LogsCLI extends Configured implements Tool {
       if (yarnClient != null) {
         yarnClient.close();
       }
+      if (webServiceClient != null) {
+        webServiceClient.destroy();
+      }
     }
   }
 
@@ -171,6 +175,7 @@ public class LogsCLI extends Configured implements Tool {
     }
     CommandLineParser parser = new GnuParser();
     String appIdStr = null;
+    String clusterIdStr = null;
     String containerIdStr = null;
     String nodeAddress = null;
     String appOwner = null;
@@ -206,6 +211,10 @@ public class LogsCLI extends Configured implements Tool {
           System.err.println(ex.getMessage());
           return -1;
         }
+      }
+      if (commandLine.hasOption(CLUSTER_ID_OPTION)) {
+        clusterIdStr = commandLine.getOptionValue(CLUSTER_ID_OPTION);
+        getConf().set(YarnConfiguration.RM_CLUSTER_ID, clusterIdStr);
       }
       if (commandLine.hasOption(PER_CONTAINER_LOG_FILES_OPTION)) {
         logFiles = commandLine.getOptionValues(PER_CONTAINER_LOG_FILES_OPTION);
@@ -302,6 +311,8 @@ public class LogsCLI extends Configured implements Tool {
 
     LogCLIHelpers logCliHelper = new LogCLIHelpers();
     logCliHelper.setConf(getConf());
+
+    yarnClient = createYarnClient();
 
     YarnApplicationState appState = YarnApplicationState.NEW;
     ApplicationReport appReport = null;
@@ -411,24 +422,34 @@ public class LogsCLI extends Configured implements Tool {
   }
 
   protected List<JSONObject> getAMContainerInfoForRMWebService(
-      Configuration conf, String appId) throws ClientHandlerException,
+      Configuration conf, String appId) throws Exception {
+    return WebAppUtils.execOnActiveRM(conf, this::getAMContainerInfoFromRM,
+        appId);
+  }
+
+  private List<JSONObject> getAMContainerInfoFromRM(
+      String webAppAddress, String appId) throws ClientHandlerException,
       UniformInterfaceException, JSONException {
-    String webAppAddress = WebAppUtils.getRMWebAppURLWithScheme(conf);
-
-    WebResource webResource = webServiceClient.resource(webAppAddress);
-
-    ClientResponse response =
-        webResource.path("ws").path("v1").path("cluster").path("apps")
-          .path(appId).path("appattempts").accept(MediaType.APPLICATION_JSON)
-          .get(ClientResponse.class);
-    JSONObject json =
-        response.getEntity(JSONObject.class).getJSONObject("appAttempts");
-    JSONArray requests = json.getJSONArray("appAttempt");
     List<JSONObject> amContainersList = new ArrayList<JSONObject>();
-    for (int i = 0; i < requests.length(); i++) {
-      amContainersList.add(requests.getJSONObject(i));
+    ClientResponse response = null;
+    try {
+      Builder builder = webServiceClient.resource(webAppAddress)
+          .path("ws").path("v1").path("cluster")
+          .path("apps").path(appId).path("appattempts")
+          .accept(MediaType.APPLICATION_JSON);
+      response = builder.get(ClientResponse.class);
+      JSONObject json = response.getEntity(JSONObject.class)
+          .getJSONObject("appAttempts");
+      JSONArray requests = json.getJSONArray("appAttempt");
+      for (int j = 0; j < requests.length(); j++) {
+        amContainersList.add(requests.getJSONObject(j));
+      }
+      return amContainersList;
+    } finally {
+      if (response != null) {
+        response.close();
+      }
     }
-    return amContainersList;
   }
 
   private List<JSONObject> getAMContainerInfoForAHSWebService(
@@ -824,6 +845,8 @@ public class LogsCLI extends Configured implements Tool {
         + "By default, it will print all available logs."
         + " Work with -log_files to get only specific logs. If specified, the"
         + " applicationId can be omitted");
+    opts.addOption(CLUSTER_ID_OPTION, true, "ClusterId. "
+        + "By default, it will take default cluster id from the RM");
     opts.addOption(NODE_ADDRESS_OPTION, true, "NodeAddress in the format "
         + "nodename:port");
     opts.addOption(APP_OWNER_OPTION, true,
@@ -892,6 +915,7 @@ public class LogsCLI extends Configured implements Tool {
         + "and fetch all logs.");
     opts.getOption(APPLICATION_ID_OPTION).setArgName("Application ID");
     opts.getOption(CONTAINER_ID_OPTION).setArgName("Container ID");
+    opts.getOption(CLUSTER_ID_OPTION).setArgName("Cluster ID");
     opts.getOption(NODE_ADDRESS_OPTION).setArgName("Node Address");
     opts.getOption(APP_OWNER_OPTION).setArgName("Application Owner");
     opts.getOption(AM_CONTAINER_OPTION).setArgName("AM Containers");
@@ -913,6 +937,7 @@ public class LogsCLI extends Configured implements Tool {
     Options printOpts = new Options();
     printOpts.addOption(commandOpts.getOption(HELP_CMD));
     printOpts.addOption(commandOpts.getOption(CONTAINER_ID_OPTION));
+    printOpts.addOption(commandOpts.getOption(CLUSTER_ID_OPTION));
     printOpts.addOption(commandOpts.getOption(NODE_ADDRESS_OPTION));
     printOpts.addOption(commandOpts.getOption(APP_OWNER_OPTION));
     printOpts.addOption(commandOpts.getOption(AM_CONTAINER_OPTION));

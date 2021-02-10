@@ -37,6 +37,7 @@ import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.server.common.JspHelper;
+import org.apache.hadoop.hdfs.server.common.TokenVerifier;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress;
 import org.apache.hadoop.hdfs.server.namenode.web.resources.NamenodeWebHdfsMethods;
 import org.apache.hadoop.hdfs.web.AuthFilter;
@@ -50,6 +51,8 @@ import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.http.RestCsrfPreventionFilter;
+
+import com.sun.jersey.api.core.ResourceConfig;
 
 /**
  * Encapsulates the HTTP server started by the NameNode. 
@@ -112,9 +115,11 @@ public class NameNodeHttpServer {
     }
 
     // add webhdfs packages
+    final Map<String, String> resourceParams = new HashMap<>();
+    resourceParams.put(ResourceConfig.FEATURE_MATCH_MATRIX_PARAMS, "true");
     httpServer2.addJerseyResourcePackage(
         jerseyResourcePackage + ";" + Param.class.getPackage().getName(),
-        pathSpec);
+        pathSpec, resourceParams);
   }
 
   /**
@@ -302,6 +307,11 @@ public class NameNodeHttpServer {
 
   public static NameNode getNameNodeFromContext(ServletContext context) {
     return (NameNode)context.getAttribute(NAMENODE_ATTRIBUTE_KEY);
+  }
+
+  public static TokenVerifier
+      getTokenVerifierFromContext(ServletContext context) {
+    return (TokenVerifier) context.getAttribute(NAMENODE_ATTRIBUTE_KEY);
   }
 
   static Configuration getConfFromContext(ServletContext context) {

@@ -16,7 +16,6 @@
  */
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.docker;
 
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperation;
 
@@ -28,18 +27,27 @@ import java.util.Map;
  */
 public class DockerRmCommand extends DockerCommand {
   private static final String RM_COMMAND = "rm";
+  private static final String CGROUP_HIERARCHY = "hierarchy";
+  private String cGroupArg;
 
-  public DockerRmCommand(String containerName) {
+  public DockerRmCommand(String containerName, String hierarchy) {
     super(RM_COMMAND);
     super.addCommandArguments("name", containerName);
+    if ((hierarchy != null) && !hierarchy.isEmpty()) {
+      super.addCommandArguments(CGROUP_HIERARCHY, hierarchy);
+      this.cGroupArg = hierarchy;
+    }
   }
 
   @Override
   public PrivilegedOperation preparePrivilegedOperation(
       DockerCommand dockerCommand, String containerName, Map<String,
-      String> env, Configuration conf, Context nmContext) {
+      String> env, Context nmContext) {
     PrivilegedOperation dockerOp = new PrivilegedOperation(
         PrivilegedOperation.OperationType.REMOVE_DOCKER_CONTAINER);
+    if (this.cGroupArg != null) {
+      dockerOp.appendArgs(cGroupArg);
+    }
     dockerOp.appendArgs(containerName);
     return dockerOp;
   }

@@ -72,6 +72,25 @@ public class CommonConfigurationKeysPublic {
   public static final String  FS_DU_INTERVAL_KEY = "fs.du.interval";
   /** Default value for FS_DU_INTERVAL_KEY */
   public static final long    FS_DU_INTERVAL_DEFAULT = 600000;
+
+  /**
+   * @see
+   * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
+   * core-default.xml</a>
+   */
+  public static final String FS_GETSPACEUSED_CLASSNAME =
+      "fs.getspaceused.classname";
+
+  /**
+   * @see
+   * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
+   * core-default.xml</a>
+   */
+  public static final String FS_GETSPACEUSED_JITTER_KEY =
+      "fs.getspaceused.jitterMillis";
+  /** Default value for FS_GETSPACEUSED_JITTER_KEY */
+  public static final long FS_GETSPACEUSED_JITTER_DEFAULT = 60000;
+
   /**
    * @see
    * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
@@ -545,13 +564,28 @@ public class CommonConfigurationKeysPublic {
   public static final String HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_KEY =
       "hadoop.security.groups.shell.command.timeout";
   /**
+   * @deprecated use
+   * {@link CommonConfigurationKeysPublic#HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_KEY}
+   * instead.
+   */
+  public static final String HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_SECS =
+      HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_KEY;
+  /**
    * @see
    * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
    * core-default.xml</a>
    */
   public static final long
-          HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_DEFAULT =
-          0L;
+      HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_DEFAULT =
+      0L;
+  /**
+   * @deprecated use
+   * {@link CommonConfigurationKeysPublic#HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_DEFAULT}
+   * instead.
+   */
+  public static final long
+      HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_SECS_DEFAULT =
+      HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_DEFAULT;
   /**
    * @see
    * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
@@ -587,6 +621,13 @@ public class CommonConfigurationKeysPublic {
    */
   public static final String  HADOOP_SECURITY_AUTH_TO_LOCAL =
     "hadoop.security.auth_to_local";
+  /**
+   * @see
+   * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
+   * core-default.xml</a>
+   */
+  public static final String  HADOOP_SECURITY_AUTH_TO_LOCAL_MECHANISM =
+    "hadoop.security.auth_to_local.mechanism";
   /**
    * @see
    * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
@@ -890,5 +931,14 @@ public class CommonConfigurationKeysPublic {
           HADOOP_SECURITY_SENSITIVE_CONFIG_KEYS);
   public static final String HADOOP_SYSTEM_TAGS = "hadoop.system.tags";
   public static final String HADOOP_CUSTOM_TAGS = "hadoop.custom.tags";
+
+  /** Configuration option for the shutdown hook manager shutdown time:
+   *  {@value}. */
+  public static final String SERVICE_SHUTDOWN_TIMEOUT =
+      "hadoop.service.shutdown.timeout";
+
+  /** Default shutdown hook timeout: {@value} seconds. */
+  public static final long SERVICE_SHUTDOWN_TIMEOUT_DEFAULT = 30;
+
 }
 

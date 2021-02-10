@@ -23,7 +23,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.mockito.Matchers.anyInt;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
@@ -48,8 +48,10 @@ import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
@@ -170,6 +172,11 @@ public class TestIPC {
       this(handlerCount, sleep, LongWritable.class, null);
     }
 
+    public TestServer(int port, int handlerCount, boolean sleep)
+        throws IOException {
+      this(port, handlerCount, sleep, LongWritable.class, null);
+    }
+
     public TestServer(int handlerCount, boolean sleep, Configuration conf)
         throws IOException {
       this(handlerCount, sleep, LongWritable.class, null, conf);
@@ -181,11 +188,24 @@ public class TestIPC {
       this(handlerCount, sleep, paramClass, responseClass, conf);
     }
 
+    public TestServer(int port, int handlerCount, boolean sleep,
+        Class<? extends Writable> paramClass,
+        Class<? extends Writable> responseClass) throws IOException {
+      this(port, handlerCount, sleep, paramClass, responseClass, conf);
+    }
+
     public TestServer(int handlerCount, boolean sleep,
         Class<? extends Writable> paramClass,
         Class<? extends Writable> responseClass, Configuration conf)
         throws IOException {
-      super(ADDRESS, 0, paramClass, handlerCount, conf);
+      this(0, handlerCount, sleep, paramClass, responseClass, conf);
+    }
+
+    public TestServer(int port, int handlerCount, boolean sleep,
+        Class<? extends Writable> paramClass,
+        Class<? extends Writable> responseClass, Configuration conf)
+        throws IOException {
+      super(ADDRESS, port, paramClass, handlerCount, conf);
       this.sleep = sleep;
       this.responseClass = responseClass;
     }
@@ -335,6 +355,37 @@ public class TestIPC {
     for (int i = 0; i < clientCount; i++) {
       clients[i].stop();
     }
+    server.stop();
+  }
+
+  @Test
+  public void testAuxiliaryPorts() throws IOException, InterruptedException {
+    int defaultPort = 9000;
+    int[] auxiliaryPorts = {9001, 9002, 9003};
+    final int handlerCount = 5;
+    final boolean handlerSleep = false;
+    Server server = new TestServer(defaultPort, handlerCount, handlerSleep);
+    for (int port : auxiliaryPorts) {
+      server.addAuxiliaryListener(port);
+    }
+    Set<InetSocketAddress> listenerAddrs =
+        server.getAuxiliaryListenerAddresses();
+    Set<InetSocketAddress> addrs = new HashSet<>();
+    for (InetSocketAddress addr : listenerAddrs) {
+      addrs.add(NetUtils.getConnectAddress(addr));
+    }
+    server.start();
+
+    Client client = new Client(LongWritable.class, conf);
+    Set<SerialCaller> calls = new HashSet<>();
+    for (InetSocketAddress addr : addrs) {
+      calls.add(new SerialCaller(client, addr, 100));
+    }
+    for (SerialCaller caller : calls) {
+      caller.join();
+      assertFalse(caller.failed);
+    }
+    client.stop();
     server.stop();
   }
 	
@@ -590,6 +641,16 @@ public class TestIPC {
   }
 
   /**
+   * Mock socket class to help inject an exception for HADOOP-7428.
+   */
+  static class MockSocket extends Socket {
+    @Override
+    public synchronized void setSoTimeout(int timeout) {
+      throw new RuntimeException("Injected fault");
+    }
+  }
+
+  /**
    * Test that, if a RuntimeException is thrown after creating a socket
    * but before successfully connecting to the IPC server, that the
    * failure is handled properly. This is a regression test for
@@ -602,11 +663,8 @@ public class TestIPC {
     SocketFactory spyFactory = spy(NetUtils.getDefaultSocketFactory(conf));
     Mockito.doAnswer(new Answer<Socket>() {
       @Override
-      public Socket answer(InvocationOnMock invocation) throws Throwable {
-        Socket s = spy((Socket)invocation.callRealMethod());
-        doThrow(new RuntimeException("Injected fault")).when(s)
-          .setSoTimeout(anyInt());
-        return s;
+      public Socket answer(InvocationOnMock invocation) {
+        return new MockSocket();
       }
     }).when(spyFactory).createSocket();
       
@@ -1396,6 +1454,50 @@ public class TestIPC {
   public void testClientGetTimeout() throws IOException {
     Configuration config = new Configuration();
     assertEquals(Client.getTimeout(config), -1);
+  }
+
+  @Test(timeout=60000)
+  public void testSetupConnectionShouldNotBlockShutdown() throws Exception {
+    // Start server
+    SocketFactory mockFactory = Mockito.mock(SocketFactory.class);
+    Server server = new TestServer(1, true);
+    final InetSocketAddress addr = NetUtils.getConnectAddress(server);
+
+    // Track how many times we retried to set up the connection
+    final AtomicInteger createSocketCalled = new AtomicInteger();
+
+    doAnswer(new Answer() {
+      @Override
+      public Object answer(InvocationOnMock invocationOnMock) throws Throwable {
+        createSocketCalled.addAndGet(1);
+        Thread.sleep(MIN_SLEEP_TIME * 5);
+        throw new ConnectTimeoutException("fake");
+      }
+    }).when(mockFactory).createSocket();
+    final Client client = new Client(LongWritable.class, conf, mockFactory);
+
+    final AtomicBoolean callStarted = new AtomicBoolean(false);
+
+    // Call a random function asynchronously so that we can call stop()
+    new Thread(new Runnable() {
+      public void run() {
+        try {
+          callStarted.set(true);
+          call(client, RANDOM.nextLong(), addr, conf);
+        } catch (IOException ignored) {}
+      }
+    }).start();
+
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        return callStarted.get() && createSocketCalled.get() == 1;
+      }
+    }, 50, 60000);
+
+    // stop() should stop the client immediately without any more retries
+    client.stop();
+    assertEquals(1, createSocketCalled.get());
   }
 
   private void assertRetriesOnSocketTimeouts(Configuration conf,

@@ -44,7 +44,13 @@ The following configuration parameters can be used to modify the disk checks:
 
 ###External Health Script
 
-Users may specify their own health checker script that will be invoked by the health checker service. Users may specify a timeout as well as options to be passed to the script. If the script exits with a non-zero exit code, times out or results in an exception being thrown, the node is marked as unhealthy. Please note that if the script cannot be executed due to permissions or an incorrect path, etc, then it counts as a failure and the node will be reported as unhealthy. Please note that speifying a health check script is not mandatory. If no script is specified, only the disk checker status will be used to determine the health of the node.
+Users may specify their own health checker script that will be invoked by the health checker service. Users may specify a timeout as well as options to be passed to the script. If the script times out, results in an exception being thrown or outputs a line which begins with the string ERROR, the node is marked as unhealthy. Please note that:
+
+  * Exit code other than 0 is **not** considered to be a failure because it might have been caused by a syntax error. Therefore the node will **not** be marked as unhealthy.
+
+  * If the script cannot be executed due to permissions or an incorrect path, etc, then it counts as a failure and the node will be reported as unhealthy.
+
+  * Specifying a health check script is not mandatory. If no script is specified, only the disk checker status will be used to determine the health of the node.
 
 The following configuration parameters can be used to set the health script:
 
@@ -77,13 +83,19 @@ Step 2.  Configure a path to the local file-system directory where the NodeManag
 |:---- |:---- |
 | `yarn.nodemanager.recovery.dir` | The local filesystem directory in which the node manager will store state when recovery is enabled. The default value is set to `$hadoop.tmp.dir/yarn-nm-recovery`. |
 
-Step 3.  Configure a valid RPC address for the NodeManager.
+Step 3: Enable NM supervision under recovery to prevent running containers from getting cleaned up when NM exits.
+
+| Property | Description |
+|:---- |:---- |
+| `yarn.nodemanager.recovery.supervised` | If enabled, NodeManager running will not try to cleanup containers as it exits with the assumption it will be immediately be restarted and recover containers The default value is set to 'false'. |
+
+Step 4.  Configure a valid RPC address for the NodeManager.
 
 | Property | Description |
 |:---- |:---- |
 | `yarn.nodemanager.address` | Ephemeral ports (port 0, which is default) cannot be used for the NodeManager's RPC server specified via yarn.nodemanager.address as it can make NM use different ports before and after a restart. This will break any previously running clients that were communicating with the NM before restart. Explicitly setting yarn.nodemanager.address to an address with specific port number (for e.g 0.0.0.0:45454) is a precondition for enabling NM restart. |
 
-Step 4.  Auxiliary services.
+Step 5.  Auxiliary services.
 
   * NodeManagers in a YARN cluster can be configured to run auxiliary services. For a completely functional NM restart, YARN relies on any auxiliary service configured to also support recovery. This usually includes (1) avoiding usage of ephemeral ports so that previously running clients (in this case, usually containers) are not disrupted after restart and (2) having the auxiliary service itself support recoverability by reloading any previous state when NodeManager restarts and reinitializes the auxiliary service.
 

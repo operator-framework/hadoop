@@ -65,6 +65,7 @@ import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.LocalResource;
 import org.apache.hadoop.yarn.api.records.LocalResourceType;
 import org.apache.hadoop.yarn.api.records.LocalResourceVisibility;
+import org.apache.hadoop.yarn.api.records.LogAggregationContext;
 import org.apache.hadoop.yarn.api.records.NodeReport;
 import org.apache.hadoop.yarn.api.records.NodeState;
 import org.apache.hadoop.yarn.api.records.Priority;
@@ -93,6 +94,7 @@ import org.apache.hadoop.yarn.util.UnitsConversionUtil;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.util.resource.Resources;
 import org.apache.hadoop.yarn.util.timeline.TimelineUtils;
+import com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -189,12 +191,16 @@ public class Client {
   private ExecutionType containerType = ExecutionType.GUARANTEED;
   // Whether to auto promote opportunistic containers
   private boolean autoPromoteContainers = false;
+  // Whether to enforce execution type of containers
+  private boolean enforceExecType = false;
 
   // Placement specification
   private String placementSpec = "";
   // log4j.properties file 
   // if available, add to local resources and set into classpath 
-  private String log4jPropFile = "";	
+  private String log4jPropFile = "";
+  // rolling
+  private String rollingFilesPattern = "";
 
   // Start time for client
   private final long clientStartTime = System.currentTimeMillis();
@@ -269,7 +275,7 @@ public class Client {
     }
     if (result) {
       LOG.info("Application completed successfully");
-      System.exit(0);			
+      System.exit(0);
     } 
     LOG.error("Application failed to complete successfully");
     System.exit(2);
@@ -330,7 +336,11 @@ public class Client {
     opts.addOption("promote_opportunistic_after_start", false,
         "Flag to indicate whether to automatically promote opportunistic"
             + " containers to guaranteed.");
+    opts.addOption("enforce_execution_type", false,
+        "Flag to indicate whether to enforce execution type of containers");
     opts.addOption("log_properties", true, "log4j.properties file");
+    opts.addOption("rolling_log_pattern", true,
+        "pattern for files that should be aggregated in a rolling fashion");
     opts.addOption("keep_containers_across_application_attempts", false,
         "Flag to indicate whether to keep containers across application "
             + "attempts."
@@ -428,6 +438,10 @@ public class Client {
       }
     }
 
+    if (cliParser.hasOption("rolling_log_pattern")) {
+      rollingFilesPattern = cliParser.getOptionValue("rolling_log_pattern");
+    }
+
     if (cliParser.hasOption("help")) {
       printUsage();
       return false;
@@ -472,7 +486,7 @@ public class Client {
 
     if (!cliParser.hasOption("jar")) {
       throw new IllegalArgumentException("No jar file specified for application master");
-    }		
+    }
 
     appMasterJar = cliParser.getOptionValue("jar");
 
@@ -521,6 +535,9 @@ public class Client {
     }
     if (cliParser.hasOption("promote_opportunistic_after_start")) {
       autoPromoteContainers = true;
+    }
+    if (cliParser.hasOption("enforce_execution_type")) {
+      enforceExecType = true;
     }
     containerMemory =
         Integer.parseInt(cliParser.getOptionValue("container_memory", "-1"));
@@ -648,21 +665,27 @@ public class Client {
     }
 
     QueueInfo queueInfo = yarnClient.getQueueInfo(this.amQueue);
+    if (queueInfo == null) {
+      throw new IllegalArgumentException(String
+          .format("Queue %s not present in scheduler configuration.",
+              this.amQueue));
+    }
+
     LOG.info("Queue info"
         + ", queueName=" + queueInfo.getQueueName()
         + ", queueCurrentCapacity=" + queueInfo.getCurrentCapacity()
         + ", queueMaxCapacity=" + queueInfo.getMaximumCapacity()
         + ", queueApplicationCount=" + queueInfo.getApplications().size()
-        + ", queueChildQueueCount=" + queueInfo.getChildQueues().size());		
+        + ", queueChildQueueCount=" + queueInfo.getChildQueues().size());
 
     List<QueueUserACLInfo> listAclInfo = yarnClient.getQueueAclsInfo();
     for (QueueUserACLInfo aclInfo : listAclInfo) {
       for (QueueACL userAcl : aclInfo.getUserAcls()) {
         LOG.info("User ACL Info for Queue"
-            + ", queueName=" + aclInfo.getQueueName()			
+            + ", queueName=" + aclInfo.getQueueName()
             + ", userAcl=" + userAcl.name());
       }
-    }		
+    }
 
     if (domainId != null && domainId.length() > 0 && toCreateDomain) {
       prepareTimelineDomain();
@@ -759,7 +782,7 @@ public class Client {
 
     // set local resources for the application master
     // local files or archives as needed
-    // In this scenario, the jar file for the application master is part of the local resources			
+    // In this scenario, the jar file for the application master is part of the local resources
     Map<String, LocalResource> localResources = new HashMap<String, LocalResource>();
 
     LOG.info("Copy App Master jar from local filesystem and add to local environment");
@@ -780,7 +803,7 @@ public class Client {
     // To do this, we need to first copy into the filesystem that is visible 
     // to the yarn framework. 
     // We do not need to set this as a local resource for the application 
-    // master as the application master does not need it. 		
+    // master as the application master does not need it.
     String hdfsShellScriptLocation = ""; 
     long hdfsShellScriptLen = 0;
     long hdfsShellScriptTimestamp = 0;
@@ -824,7 +847,7 @@ public class Client {
       env.put(DSConstants.DISTRIBUTEDSHELLTIMELINEDOMAIN, domainId);
     }
 
-    // Add AppMaster.jar location to classpath 		
+    // Add AppMaster.jar location to classpath
     // At some point we should not be required to add 
     // the hadoop specific classpaths to the env. 
     // It should be provided out of the box. 
@@ -854,7 +877,9 @@ public class Client {
 
     // Set java executable command 
     LOG.info("Setting up app master command");
-    vargs.add(Environment.JAVA_HOME.$$() + "/bin/java");
+    // Need extra quote here because JAVA_HOME might contain space on Windows,
+    // e.g. C:/Program Files/Java...
+    vargs.add("\"" + Environment.JAVA_HOME.$$() + "/bin/java\"");
     // Set Xmx based on am memory size
     vargs.add("-Xmx" + amMemory + "m");
     // Set class name 
@@ -865,6 +890,9 @@ public class Client {
     }
     if (autoPromoteContainers) {
       vargs.add("--promote_opportunistic_after_start");
+    }
+    if (enforceExecType) {
+      vargs.add("--enforce_execution_type");
     }
     if (containerMemory > 0) {
       vargs.add("--container_memory " + String.valueOf(containerMemory));
@@ -917,7 +945,7 @@ public class Client {
 
     LOG.info("Completed setting up app master command " + command.toString());
     List<String> commands = new ArrayList<String>();
-    commands.add(command.toString());		
+    commands.add(command.toString());
 
     // Set up the container launch context for the application master
     ContainerLaunchContext amContainer = ContainerLaunchContext.newInstance(
@@ -978,6 +1006,8 @@ public class Client {
     // Set the queue to which this application is to be submitted in the RM
     appContext.setQueue(amQueue);
 
+    specifyLogAggregationContext(appContext);
+
     // Submit the application to the applications manager
     // SubmitApplicationResponse submitResp = applicationsManager.submitApplication(appRequest);
     // Ignore the response as either a valid response object is returned on success 
@@ -993,6 +1023,15 @@ public class Client {
     // Monitor the application
     return monitorApplication(appId);
 
+  }
+
+  @VisibleForTesting
+  void specifyLogAggregationContext(ApplicationSubmissionContext appContext) {
+    if (!rollingFilesPattern.isEmpty()) {
+      LogAggregationContext logAggregationContext = LogAggregationContext
+          .newInstance(null, null, rollingFilesPattern, "");
+      appContext.setLogAggregationContext(logAggregationContext);
+    }
   }
 
   /**
@@ -1043,22 +1082,25 @@ public class Client {
               + " YarnState=" + state.toString() + ", DSFinalStatus=" + dsStatus.toString()
               + ". Breaking monitoring loop");
           return false;
-        }			  
+        }
       }
-      else if (YarnApplicationState.KILLED == state	
+      else if (YarnApplicationState.KILLED == state
           || YarnApplicationState.FAILED == state) {
         LOG.info("Application did not finish."
             + " YarnState=" + state.toString() + ", DSFinalStatus=" + dsStatus.toString()
             + ". Breaking monitoring loop");
         return false;
-      }			
-
-      if (System.currentTimeMillis() > (clientStartTime + clientTimeout)) {
-        LOG.info("Reached client specified timeout for application. Killing application");
-        forceKillApplication(appId);
-        return false;				
       }
-    }			
+
+      // The value equal or less than 0 means no timeout
+      if (clientTimeout > 0
+          && System.currentTimeMillis() > (clientStartTime + clientTimeout)) {
+        LOG.info("Reached client specified timeout for application. " +
+            "Killing application");
+        forceKillApplication(appId);
+        return false;
+      }
+    }
 
   }
 
@@ -1076,7 +1118,7 @@ public class Client {
 
     // Response can be ignored as it is non-null on success or 
     // throws an exception in case of failures
-    yarnClient.killApplication(appId);	
+    yarnClient.killApplication(appId);
   }
 
   private void addToLocalResources(FileSystem fs, String fileSrcPath,

@@ -153,6 +153,7 @@ public class NodeStatusUpdaterImpl extends AbstractService implements
 
   private NMNodeLabelsHandler nodeLabelsHandler;
   private final NodeLabelsProvider nodeLabelsProvider;
+  private boolean timelineServiceV2Enabled;
 
   public NodeStatusUpdaterImpl(Context context, Dispatcher dispatcher,
       NodeHealthCheckerService healthChecker, NodeManagerMetrics metrics) {
@@ -240,6 +241,8 @@ public class NodeStatusUpdaterImpl extends AbstractService implements
     this.logAggregationEnabled =
         conf.getBoolean(YarnConfiguration.LOG_AGGREGATION_ENABLED,
           YarnConfiguration.DEFAULT_LOG_AGGREGATION_ENABLED);
+    this.timelineServiceV2Enabled = YarnConfiguration.
+        timelineServiceV2Enabled(conf);
   }
 
   @Override
@@ -315,8 +318,8 @@ public class NodeStatusUpdaterImpl extends AbstractService implements
         statusUpdater.join();
         registerWithRM();
         statusUpdater = new Thread(statusUpdaterRunnable, "Node Status Updater");
-        statusUpdater.start();
         this.isStopped = false;
+        statusUpdater.start();
         LOG.info("NodeStatusUpdater thread is reRegistered and restarted");
       } catch (Exception e) {
         String errorMessage = "Unexpected error rebooting NodeStatusUpdater";
@@ -612,7 +615,13 @@ public class NodeStatusUpdaterImpl extends AbstractService implements
 
   private List<ApplicationId> getRunningApplications() {
     List<ApplicationId> runningApplications = new ArrayList<ApplicationId>();
-    runningApplications.addAll(this.context.getApplications().keySet());
+    for (Entry<ApplicationId, Application> appEntry : this.context
+        .getApplications().entrySet()) {
+      if (ApplicationState.FINISHED != appEntry.getValue()
+          .getApplicationState()) {
+        runningApplications.add(appEntry.getKey());
+      }
+    }
     return runningApplications;
   }
 
@@ -1171,7 +1180,7 @@ public class NodeStatusUpdaterImpl extends AbstractService implements
                   newResource.toString());
             }
           }
-          if (YarnConfiguration.timelineServiceV2Enabled(context.getConf())) {
+          if (timelineServiceV2Enabled) {
             updateTimelineCollectorData(response);
           }
 

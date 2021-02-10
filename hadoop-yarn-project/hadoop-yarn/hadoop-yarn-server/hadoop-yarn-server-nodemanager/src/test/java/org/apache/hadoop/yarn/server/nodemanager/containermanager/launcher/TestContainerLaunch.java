@@ -96,6 +96,7 @@ import org.apache.hadoop.yarn.server.nodemanager.ContainerExecutor;
 import org.apache.hadoop.yarn.server.nodemanager.ContainerExecutor.ExitCode;
 import org.apache.hadoop.yarn.server.nodemanager.DefaultContainerExecutor;
 import org.apache.hadoop.yarn.server.nodemanager.LinuxContainerExecutor;
+import org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerService;
 import org.apache.hadoop.yarn.server.nodemanager.NodeManager.NMContext;
 import org.apache.hadoop.yarn.server.nodemanager.NodeStatusUpdater;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.BaseContainerManagerTest;
@@ -107,6 +108,7 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.launcher.Conta
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperationExecutor;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.DockerLinuxContainerRuntime;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ContainerLocalizer;
+import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerStartContext;
 import org.apache.hadoop.yarn.server.nodemanager.recovery.NMNullStateStoreService;
 import org.apache.hadoop.yarn.server.nodemanager.security.NMContainerTokenSecretManager;
 import org.apache.hadoop.yarn.server.nodemanager.security.NMTokenSecretManagerInNM;
@@ -121,6 +123,7 @@ import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.ArgumentCaptor;
 
 public class TestContainerLaunch extends BaseContainerManagerTest {
 
@@ -156,7 +159,7 @@ public class TestContainerLaunch extends BaseContainerManagerTest {
     File shellFile = null;
     File tempFile = null;
     String badSymlink = Shell.WINDOWS ? "foo@zz_#!-+bar.cmd" :
-      "foo@zz%_#*&!-+= bar()";
+      "-foo@zz%_#*&!-+= bar()";
     File symLinkFile = null;
 
     try {
@@ -465,10 +468,15 @@ public class TestContainerLaunch extends BaseContainerManagerTest {
     for (String envVar : env.keySet()) {
       Assert.assertTrue(shellContent.contains(envVar + "="));
     }
+    // The whitelist vars should not have been added to env
+    // They should only be in the launch script
     for (String wlVar : whitelistVars) {
+      Assert.assertFalse(env.containsKey(wlVar));
       Assert.assertTrue(shellContent.contains(wlVar + "="));
     }
+    // Non-whitelist nm vars should be in neither env nor in launch script
     for (String nwlVar : nonWhiteListEnv) {
+      Assert.assertFalse(env.containsKey(nwlVar));
       Assert.assertFalse(shellContent.contains(nwlVar + "="));
     }
     // Explicitly Set NM vars should be before user vars
@@ -2275,5 +2283,83 @@ public class TestContainerLaunch extends BaseContainerManagerTest {
         env.generateCombinationAndTest(count, keys);
       }
     }
+  }
+
+  @Test
+  public void testDistributedCacheDirs() throws Exception {
+    Container container = mock(Container.class);
+    ApplicationId appId =
+        ApplicationId.newInstance(System.currentTimeMillis(), 1);
+    ContainerId containerId = ContainerId
+        .newContainerId(ApplicationAttemptId.newInstance(appId, 1), 1);
+    when(container.getContainerId()).thenReturn(containerId);
+    when(container.getUser()).thenReturn("test");
+
+    when(container.getLocalizedResources())
+        .thenReturn(Collections.<Path, List<String>> emptyMap());
+    Dispatcher dispatcher = mock(Dispatcher.class);
+
+    ContainerLaunchContext clc = mock(ContainerLaunchContext.class);
+    when(clc.getCommands()).thenReturn(Collections.<String>emptyList());
+    when(container.getLaunchContext()).thenReturn(clc);
+
+    @SuppressWarnings("rawtypes")
+    ContainerExitHandler eventHandler =
+        mock(ContainerExitHandler.class);
+    when(dispatcher.getEventHandler()).thenReturn(eventHandler);
+
+    Application app = mock(Application.class);
+    when(app.getAppId()).thenReturn(appId);
+    when(app.getUser()).thenReturn("test");
+
+    Credentials creds = mock(Credentials.class);
+    when(container.getCredentials()).thenReturn(creds);
+
+    ((NMContext) context).setNodeId(NodeId.newInstance("127.0.0.1", HTTP_PORT));
+    ContainerExecutor mockExecutor = mock(ContainerExecutor.class);
+
+    LocalDirsHandlerService mockDirsHandler =
+        mock(LocalDirsHandlerService.class);
+
+    List <String> localDirsForRead = new ArrayList<String>();
+    String localDir1 =
+      new File("target", this.getClass().getSimpleName() + "-localDir1")
+        .getAbsoluteFile().toString();
+    String localDir2 =
+      new File("target", this.getClass().getSimpleName() + "-localDir2")
+        .getAbsoluteFile().toString();
+    localDirsForRead.add(localDir1);
+    localDirsForRead.add(localDir2);
+
+    List <String> localDirs = new ArrayList();
+    localDirs.add(localDir1);
+    Path logPathForWrite = new Path(localDirs.get(0));
+
+    when(mockDirsHandler.areDisksHealthy()).thenReturn(true);
+    when(mockDirsHandler.getLocalDirsForRead()).thenReturn(localDirsForRead);
+    when(mockDirsHandler.getLocalDirs()).thenReturn(localDirs);
+    when(mockDirsHandler.getLogDirs()).thenReturn(localDirs);
+    when(mockDirsHandler.getLogPathForWrite(anyString(),
+        anyBoolean())).thenReturn(logPathForWrite);
+    when(mockDirsHandler.getLocalPathForWrite(anyString()))
+        .thenReturn(logPathForWrite);
+    when(mockDirsHandler.getLocalPathForWrite(anyString(), anyLong(),
+      anyBoolean())).thenReturn(logPathForWrite);
+
+    ContainerLaunch launch = new ContainerLaunch(context, conf, dispatcher,
+        mockExecutor, app, container, mockDirsHandler, containerManager);
+    launch.call();
+
+    ArgumentCaptor <ContainerStartContext> ctxCaptor =
+        ArgumentCaptor.forClass(ContainerStartContext.class);
+    verify(mockExecutor, times(1)).launchContainer(ctxCaptor.capture());
+    ContainerStartContext ctx = ctxCaptor.getValue();
+
+    Assert.assertEquals(StringUtils.join(",",
+        launch.getNMFilecacheDirs(localDirsForRead)),
+        StringUtils.join(",", ctx.getFilecacheDirs()));
+    Assert.assertEquals(StringUtils.join(",",
+        launch.getUserFilecacheDirs(localDirsForRead)),
+        StringUtils.join(",", ctx.getUserFilecacheDirs()));
   }
 }

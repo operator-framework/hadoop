@@ -54,13 +54,13 @@ The `CapacityScheduler` supports the following features:
 
 * **Operability**
 
-    * Runtime Configuration - The queue definitions and properties such as capacity, ACLs can be changed, at runtime, by administrators in a secure manner to minimize disruption to users. Also, a console is provided for users and administrators to view current allocation of resources to various queues in the system. Administrators can *add additional queues* at runtime, but queues cannot be *deleted* at runtime.
+    * Runtime Configuration - The queue definitions and properties such as capacity, ACLs can be changed, at runtime, by administrators in a secure manner to minimize disruption to users. Also, a console is provided for users and administrators to view current allocation of resources to various queues in the system. Administrators can *add additional queues* at runtime, but queues cannot be *deleted* at runtime unless the queue is STOPPED and nhas no pending/running apps.
 
     * Drain applications - Administrators can *stop* queues at runtime to ensure that while existing applications run to completion, no new applications can be submitted. If a queue is in `STOPPED` state, new applications cannot be submitted to *itself* or *any of its child queues*. Existing applications continue to completion, thus the queue can be *drained* gracefully. Administrators can also *start* the stopped queues.
 
 * **Resource-based Scheduling** - Support for resource-intensive applications, where-in a application can optionally specify higher resource-requirements than the default, thereby accommodating applications with differing resource requirements. Currently, *memory* is the resource requirement supported.
 
-* **Queue Mapping based on User or Group** - This feature allows users to map a job to a specific queue based on the user or group.
+* **Queue Mapping Interface based on Default or User Defined Placement Rules** - This feature allows users to map a job to a specific queue based on some default placement rule. For instance based on user & group, or application name. User can also define their own placement rule.
 
 * **Priority Scheduling** - This feature allows applications to be submitted and scheduled with different priorities. Higher integer value indicates higher priority for an application. Currently Application priority is supported only for FIFO ordering policy.
 
@@ -155,13 +155,14 @@ Configuration
 
 **Note:** An *ACL* is of the form *user1*,*user2* *space* *group1*,*group2*. The special value of * implies *anyone*. The special value of *space* implies *no one*. The default is * for the root queue if not specified.
 
-  * Queue Mapping based on User or Group
+  * Queue Mapping based on User or Group, Application Name or user defined placement rules
 
-  The `CapacityScheduler` supports the following parameters to configure the queue mapping based on user or group:
+  The `CapacityScheduler` supports the following parameters to configure the queue mapping based on user or group, user & group, or application name. User can also define their own placement rule:
 
 | Property | Description |
 |:---- |:---- |
 | `yarn.scheduler.capacity.queue-mappings` | This configuration specifies the mapping of user or group to a specific queue. You can map a single user or a list of users to queues. Syntax: `[u or g]:[name]:[queue_name][,next_mapping]*`. Here, *u or g* indicates whether the mapping is for a user or group. The value is *u* for user and *g* for group. *name* indicates the user name or group name. To specify the user who has submitted the application, %user can be used. *queue_name* indicates the queue name for which the application has to be mapped. To specify queue name same as user name, *%user* can be used. To specify queue name same as the name of the primary group for which the user belongs to, *%primary_group* can be used.|
+| `yarn.scheduler.queue-placement-rules.app-name` | This configuration specifies the mapping of application_name to a specific queue. You can map a single application or a list of applications to queues. Syntax: `[app_name]:[queue_name][,next_mapping]*`. Here, *app_name* indicates the application name you want to do the mapping. *queue_name* indicates the queue name for which the application has to be mapped. To specify the current application's name as the app_name, %application can be used.|
 | `yarn.scheduler.capacity.queue-mappings-override.enable` | This function is used to specify whether the user specified queues can be overridden. This is a Boolean value and the default value is *false*. |
 
 Example:
@@ -177,6 +178,16 @@ Example:
      evaluated from left to right, and the first valid mapping will be used.
    </description>
  </property>
+
+  <property>
+    <name>yarn.scheduler.queue-placement-rules.app-name</name>
+    <value>appName1:queue1,%application:%application</value>
+    <description>
+      Here, <appName1> is mapped to <queue1>, maps applications to queues with
+      the same name as application respectively. The mappings will be
+      evaluated from left to right, and the first valid mapping will be used.
+    </description>
+  </property>
 ```
 
   * Queue lifetime for applications
@@ -185,8 +196,8 @@ Example:
 
 | Property | Description |
 |:---- |:---- |
-| `yarn.scheduler.capacity.<queue-path>.maximum-application-lifetime` | Maximum lifetime of an application which is submitted to a queue in seconds. Any value less than or equal to zero will be considered as disabled. This will be a hard time limit for all applications in this queue. If positive value is configured then any application submitted to this queue will be killed after exceeds the configured lifetime. User can also specify lifetime per application basis in application submission context. But user lifetime will be overridden if it exceeds queue maximum lifetime. It is point-in-time configuration. Note : Configuring too low value will result in killing application sooner. This feature is applicable only for leaf queue. |
-| `yarn.scheduler.capacity.root.<queue-path>.default-application-lifetime` | Default lifetime of an application which is submitted to a queue in seconds. Any value less than or equal to zero will be considered as disabled. If the user has not submitted application with lifetime value then this value will be taken. It is point-in-time configuration. Note : Default lifetime can't exceed maximum lifetime. This feature is applicable only for leaf queue.|
+| `yarn.scheduler.capacity.<queue-path>.maximum-application-lifetime` | Maximum lifetime (in seconds) of an application which is submitted to a queue. Any value less than or equal to zero will be considered as disabled. The default is -1. If positive value is configured then any application submitted to this queue will be killed after it exceeds the configured lifetime. User can also specify lifetime per application in application submission context. However, user lifetime will be overridden if it exceeds queue maximum lifetime. It is point-in-time configuration. Note: This feature can be set at any level in the queue hierarchy. Child queues will inherit their parent's value unless overridden at the child level. A value of 0 means no max lifetime and will override a parent's max lifetime. If this property is not set or is set to a negative number, then this queue's max lifetime value will be inherited from it's parent.|
+| `yarn.scheduler.capacity.root.<queue-path>.default-application-lifetime` | Default lifetime (in seconds) of an application which is submitted to a queue. Any value less than or equal to zero will be considered as disabled. If the user has not submitted application with lifetime value then this value will be taken. It is point-in-time configuration. This feature can be set at any level in the queue hierarchy. Child queues will inherit their parent's value unless overridden at the child level. If set to less than or equal to 0, the queue's max value must also be unlimited. Default lifetime can't exceed maximum lifetime. |
 
 
 ###Setup for application priority.
@@ -405,7 +416,7 @@ Note, this feature should be disabled if YARN is deployed separately with the fi
 | Property | Description |
 |:---- |:---- |
 | `yarn.scheduler.capacity.per-node-heartbeat.multiple-assignments-enabled` | Whether to allow multiple container assignments in one NodeManager heartbeat. Defaults to true. |
-| `yarn.scheduler.capacity.per-node-heartbeat.maximum-container-assignments` | If `multiple-assignments-enabled` is true, the maximum amount of containers that can be assigned in one NodeManager heartbeat. Defaults to -1, which sets no limit. |
+| `yarn.scheduler.capacity.per-node-heartbeat.maximum-container-assignments` | If `multiple-assignments-enabled` is true, the maximum amount of containers that can be assigned in one NodeManager heartbeat. Default value is 100, which limits the maximum number of container assignments per heartbeat to 100. Set this value to -1 will disable this limit. |
 | `yarn.scheduler.capacity.per-node-heartbeat.maximum-offswitch-assignments` | If `multiple-assignments-enabled` is true, the maximum amount of off-switch containers that can be assigned in one NodeManager heartbeat. Defaults to 1, which represents only one off-switch allocation allowed in one heartbeat. |
 
 ###Reviewing the configuration of the CapacityScheduler
@@ -429,6 +440,18 @@ Changing queue/scheduler properties and adding/removing queues can be done in tw
 
     $ vi $HADOOP_CONF_DIR/capacity-scheduler.xml
     $ $HADOOP_YARN_HOME/bin/yarn rmadmin -refreshQueues
+
+#### Deleting queue via file
+
+  Step 1: Stop the queue
+
+  Before deleting a leaf queue, the leaf queue should not have any running/pending apps and has to BE STOPPED by changing `yarn.scheduler.capacity.<queue-path>.state`. See the
+  [Queue Administration & Permissions](CapacityScheduler.html#Queue Properties) section. 
+  Before deleting a parent queue, all its child queues should not have any running/pending apps and have to BE STOPPED. The parent queue also needs to be STOPPED
+
+  Step 2: Delete the queue
+
+  Remove the queue configurations from the file and run refresh as described above
 
 ### Changing queue configuration via API
 

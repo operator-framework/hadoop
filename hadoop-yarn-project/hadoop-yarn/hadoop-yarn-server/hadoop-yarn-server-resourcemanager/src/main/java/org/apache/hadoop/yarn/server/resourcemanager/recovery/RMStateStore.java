@@ -305,6 +305,8 @@ public abstract class RMStateStore extends AbstractService {
       context.setPriority(srcCtx.getPriority());
       context.setApplicationTags(srcCtx.getApplicationTags());
       context.setApplicationType(srcCtx.getApplicationType());
+      context.setUnmanagedAM(srcCtx.getUnmanagedAM());
+      context.setNodeLabelExpression(srcCtx.getNodeLabelExpression());
       ContainerLaunchContextPBImpl amContainerSpec =
               new ContainerLaunchContextPBImpl();
       amContainerSpec.setApplicationACLs(
@@ -850,6 +852,13 @@ public abstract class RMStateStore extends AbstractService {
     getRMStateStoreEventHandler().handle(new RMStateUpdateAppEvent(appState));
   }
 
+  @SuppressWarnings("unchecked")
+  public void updateApplicationState(ApplicationStateData appState,
+      boolean notifyApp) {
+    getRMStateStoreEventHandler().handle(new RMStateUpdateAppEvent(appState,
+        notifyApp));
+  }
+
   public void updateApplicationStateSynchronously(ApplicationStateData appState,
       boolean notifyApp, SettableFuture<Object> resultFuture) {
     handleStoreEvent(
@@ -889,7 +898,8 @@ public abstract class RMStateStore extends AbstractService {
             appAttempt.getMasterContainer(),
             credentials, appAttempt.getStartTime(),
             resUsage.getResourceUsageSecondsMap(),
-            attempMetrics.getPreemptedResourceSecondsMap());
+            attempMetrics.getPreemptedResourceSecondsMap(),
+            attempMetrics.getTotalAllocatedContainers());
 
     getRMStateStoreEventHandler().handle(
       new RMStateStoreAppAttemptEvent(attemptState));

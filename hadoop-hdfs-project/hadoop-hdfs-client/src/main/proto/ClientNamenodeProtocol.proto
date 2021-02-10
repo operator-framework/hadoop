@@ -21,7 +21,7 @@
  * Please see http://wiki.apache.org/hadoop/Compatibility
  * for what changes are allowed for a *stable* .proto interface.
  */
-
+syntax="proto2";
 option java_package = "org.apache.hadoop.hdfs.protocol.proto";
 option java_outer_classname = "ClientNamenodeProtocolProtos";
 option java_generic_services = true;
@@ -35,6 +35,7 @@ import "xattr.proto";
 import "encryption.proto";
 import "inotify.proto";
 import "erasurecoding.proto";
+import "HAServiceProtocol.proto";
 
 /**
  * The ClientNamenodeProtocol Service defines the interface between a client 
@@ -167,6 +168,7 @@ message AbandonBlockResponseProto { // void response
 
 enum AddBlockFlagProto {
   NO_LOCAL_WRITE = 1; // avoid writing to local node.
+  IGNORE_CLIENT_LOCALITY = 2; // write to a random node
 }
 
 message AddBlockRequestProto {
@@ -347,6 +349,8 @@ message GetFsReplicatedBlockStatsResponseProto {
   required uint64 missing_repl_one_blocks = 4;
   required uint64 blocks_in_future = 5;
   required uint64 pending_deletion_blocks = 6;
+  optional uint64 highest_prio_low_redundancy_blocks = 7;
+
 }
 
 message GetFsECBlockGroupStatsRequestProto { // no input paramters
@@ -358,6 +362,7 @@ message GetFsECBlockGroupStatsResponseProto {
   required uint64 missing_blocks = 3;
   required uint64 blocks_in_future = 4;
   required uint64 pending_deletion_blocks = 5;
+  optional uint64 highest_prio_low_redundancy_blocks = 6;
 }
 
 enum DatanodeReportTypeProto {  // type of the datanode report
@@ -827,6 +832,19 @@ message ListOpenFilesResponseProto {
   repeated OpenFilesTypeProto types = 3;
 }
 
+message MsyncRequestProto {
+}
+
+message MsyncResponseProto {
+}
+
+message HAServiceStateRequestProto {
+}
+
+message HAServiceStateResponseProto {
+  required hadoop.common.HAServiceStateProto state = 1;
+}
+
 service ClientNamenodeProtocol {
   rpc getBlockLocations(GetBlockLocationsRequestProto)
       returns(GetBlockLocationsResponseProto);
@@ -1013,4 +1031,8 @@ service ClientNamenodeProtocol {
       returns(GetQuotaUsageResponseProto);
   rpc listOpenFiles(ListOpenFilesRequestProto)
       returns(ListOpenFilesResponseProto);
+  rpc msync(MsyncRequestProto)
+      returns(MsyncResponseProto);
+  rpc getHAServiceState(HAServiceStateRequestProto)
+      returns(HAServiceStateResponseProto);
 }

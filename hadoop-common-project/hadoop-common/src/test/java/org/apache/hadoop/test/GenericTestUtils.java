@@ -60,7 +60,6 @@ import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
 import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
 import com.google.common.collect.Sets;
 
@@ -369,11 +368,15 @@ public abstract class GenericTestUtils {
    * time
    * @throws InterruptedException if the method is interrupted while waiting
    */
-  public static void waitFor(Supplier<Boolean> check, int checkEveryMillis,
-      int waitForMillis) throws TimeoutException, InterruptedException {
-    Preconditions.checkNotNull(check, ERROR_MISSING_ARGUMENT);
-    Preconditions.checkArgument(waitForMillis >= checkEveryMillis,
-        ERROR_INVALID_ARGUMENT);
+  public static void waitFor(final Supplier<Boolean> check,
+      final long checkEveryMillis, final long waitForMillis)
+      throws TimeoutException, InterruptedException {
+    if (check == null) {
+      throw new NullPointerException(ERROR_MISSING_ARGUMENT);
+    }
+    if (waitForMillis < checkEveryMillis) {
+      throw new IllegalArgumentException(ERROR_INVALID_ARGUMENT);
+    }
 
     long st = Time.monotonicNow();
     boolean result = check.get();
@@ -501,7 +504,7 @@ public abstract class GenericTestUtils {
    * method is called, then waits on another before continuing.
    */
   public static class DelayAnswer implements Answer<Object> {
-    private final Log LOG;
+    private final org.slf4j.Logger LOG;
 
     private final CountDownLatch fireLatch = new CountDownLatch(1);
     private final CountDownLatch waitLatch = new CountDownLatch(1);
@@ -514,7 +517,7 @@ public abstract class GenericTestUtils {
     private volatile Throwable thrown;
     private volatile Object returnValue;
 
-    public DelayAnswer(Log log) {
+    public DelayAnswer(org.slf4j.Logger log) {
       this.LOG = log;
     }
 
@@ -611,13 +614,13 @@ public abstract class GenericTestUtils {
    */
   public static class DelegateAnswer implements Answer<Object> {
     private final Object delegate;
-    private final Log log;
+    private final org.slf4j.Logger log;
 
     public DelegateAnswer(Object delegate) {
       this(null, delegate);
     }
 
-    public DelegateAnswer(Log log, Object delegate) {
+    public DelegateAnswer(org.slf4j.Logger log, Object delegate) {
       this.log = log;
       this.delegate = delegate;
     }

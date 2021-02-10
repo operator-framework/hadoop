@@ -144,7 +144,6 @@ public class NamenodeFsck implements DataEncryptionKeyFactory {
   private boolean showLocations = false;
   private boolean showRacks = false;
   private boolean showStoragePolcies = false;
-  private boolean showprogress = false;
   private boolean showCorruptFileBlocks = false;
 
   private boolean showReplicaDetails = false;
@@ -238,7 +237,10 @@ public class NamenodeFsck implements DataEncryptionKeyFactory {
       } else if (key.equals("storagepolicies")) {
         this.showStoragePolcies = true;
       } else if (key.equals("showprogress")) {
-        this.showprogress = true;
+        out.println("The fsck switch -showprogress is deprecated and no " +
+                "longer has any effect. Progress is now shown by default.");
+        LOG.warn("The fsck switch -showprogress is deprecated and no longer " +
+            "has any effect. Progress is now shown by default.");
       } else if (key.equals("openforwrite")) {
         this.showOpenFiles = true;
       } else if (key.equals("listcorruptfileblocks")) {
@@ -264,12 +266,13 @@ public class NamenodeFsck implements DataEncryptionKeyFactory {
       return;
     }
 
+    namenode.getNamesystem().readLock();
     try {
       //get blockInfo
       Block block = new Block(Block.getBlockId(blockId));
       //find which file this block belongs to
       BlockInfo blockInfo = blockManager.getStoredBlock(block);
-      if(blockInfo == null) {
+      if (blockInfo == null || blockInfo.isDeleted()) {
         out.println("Block "+ blockId +" " + NONEXISTENT_STATUS);
         LOG.warn("Block "+ blockId + " " + NONEXISTENT_STATUS);
         return;
@@ -301,35 +304,51 @@ public class NamenodeFsck implements DataEncryptionKeyFactory {
       if (blockManager.getCorruptReplicas(block) != null) {
         corruptionRecord = blockManager.getCorruptReplicas(block);
       }
-
-      //report block replicas status on datanodes
-      for(int idx = (blockInfo.numNodes()-1); idx >= 0; idx--) {
-        DatanodeDescriptor dn = blockInfo.getDatanode(idx);
-        out.print("Block replica on datanode/rack: " + dn.getHostName() +
-            dn.getNetworkLocation() + " ");
-        if (corruptionRecord != null && corruptionRecord.contains(dn)) {
-          out.print(CORRUPT_STATUS + "\t ReasonCode: " +
-              blockManager.getCorruptReason(block, dn));
-        } else if (dn.isDecommissioned() ){
-          out.print(DECOMMISSIONED_STATUS);
-        } else if (dn.isDecommissionInProgress()) {
-          out.print(DECOMMISSIONING_STATUS);
-        } else if (this.showMaintenanceState && dn.isEnteringMaintenance()) {
-          out.print(ENTERING_MAINTENANCE_STATUS);
-        } else if (this.showMaintenanceState && dn.isInMaintenance()) {
-          out.print(IN_MAINTENANCE_STATUS);
-        } else {
-          out.print(HEALTHY_STATUS);
+      // report block replicas status on datanodes
+      if (blockInfo.isStriped()) {
+        for (int idx = (blockInfo.getCapacity() - 1); idx >= 0; idx--) {
+          DatanodeDescriptor dn = blockInfo.getDatanode(idx);
+          if (dn == null) {
+            continue;
+          }
+          printDatanodeReplicaStatus(block, corruptionRecord, dn);
         }
-        out.print("\n");
+      } else {
+        for (int idx = (blockInfo.numNodes() - 1); idx >= 0; idx--) {
+          DatanodeDescriptor dn = blockInfo.getDatanode(idx);
+          printDatanodeReplicaStatus(block, corruptionRecord, dn);
+        }
       }
-    } catch (Exception e){
+    } catch (Exception e) {
       String errMsg = "Fsck on blockId '" + blockId;
       LOG.warn(errMsg, e);
       out.println(e.getMessage());
       out.print("\n\n" + errMsg);
       LOG.warn("Error in looking up block", e);
+    } finally {
+      namenode.getNamesystem().readUnlock("fsck");
     }
+  }
+
+  private void printDatanodeReplicaStatus(Block block,
+      Collection<DatanodeDescriptor> corruptionRecord, DatanodeDescriptor dn) {
+    out.print("Block replica on datanode/rack: " + dn.getHostName() +
+        dn.getNetworkLocation() + " ");
+    if (corruptionRecord != null && corruptionRecord.contains(dn)) {
+      out.print(CORRUPT_STATUS + "\t ReasonCode: " +
+          blockManager.getCorruptReason(block, dn));
+    } else if (dn.isDecommissioned()){
+      out.print(DECOMMISSIONED_STATUS);
+    } else if (dn.isDecommissionInProgress()) {
+      out.print(DECOMMISSIONING_STATUS);
+    } else if (this.showMaintenanceState && dn.isEnteringMaintenance()) {
+      out.print(ENTERING_MAINTENANCE_STATUS);
+    } else if (this.showMaintenanceState && dn.isInMaintenance()) {
+      out.print(IN_MAINTENANCE_STATUS);
+    } else {
+      out.print(HEALTHY_STATUS);
+    }
+    out.print("\n");
   }
 
   /**
@@ -471,9 +490,8 @@ public class NamenodeFsck implements DataEncryptionKeyFactory {
   void check(String parent, HdfsFileStatus file, Result replRes, Result ecRes)
       throws IOException {
     String path = file.getFullName(parent);
-    if (showprogress &&
-        (totalDirs + totalSymlinks + replRes.totalFiles + ecRes.totalFiles)
-            % 100 == 0) {
+    if ((totalDirs + totalSymlinks + replRes.totalFiles + ecRes.totalFiles)
+            % 1000 == 0) {
       out.println();
       out.flush();
     }
@@ -577,7 +595,7 @@ public class NamenodeFsck implements DataEncryptionKeyFactory {
     } else if (showFiles) {
       out.print(path + " " + fileLen + " bytes, " + redundancyPolicy + " " +
         blocks.locatedBlockCount() + " block(s): ");
-    } else if (showprogress) {
+    } else if (res.totalFiles % 100 == 0) {
       out.print('.');
     }
   }
