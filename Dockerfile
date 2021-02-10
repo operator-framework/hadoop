@@ -81,7 +81,7 @@ RUN chmod +x /usr/bin/tini
 
 ENV JAVA_HOME=/etc/alternatives/jre
 
-ENV HADOOP_VERSION 3.1.1
+ENV HADOOP_VERSION 3.1.4
 
 ENV HADOOP_HOME=/opt/hadoop
 ENV HADOOP_LOG_DIR=$HADOOP_HOME/logs
