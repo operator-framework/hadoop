@@ -1,4 +1,4 @@
-FROM registry.svc.ci.openshift.org/openshift/release:rhel-7-release-openshift-4.6 AS build
+FROM registry.ci.openshift.org/openshift/release:rhel-7-release-openshift-4.6 AS build
 # This FROM is RHEL7 based because the CI based hadoop build requires a precise
 # version of protobuf (2.5.0) which is unavilable on RHEL8. Downstream
 # production builds use RHEL8 for this builder image since protobuf 2.5.0 is not
@@ -11,7 +11,7 @@ WORKDIR /build
 COPY opt_maven_install.sh /tmp/
 RUN chmod u+x /tmp/opt_maven_install.sh && /tmp/opt_maven_install.sh $OPENSHIFT_CI
 
-FROM registry.svc.ci.openshift.org/ocp/builder:rhel-8-base-openshift-4.6
+FROM registry.ci.openshift.org/ocp/builder:rhel-8-base-openshift-4.6
 
 RUN set -x; yum install --setopt=skip_missing_names_on_install=False -y \
         java-1.8.0-openjdk \
